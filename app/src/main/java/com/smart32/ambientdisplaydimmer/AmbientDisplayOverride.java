@@ -88,7 +88,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                             mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
                         } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
                             // XposedBridge.log(TAG + "AOD resumed from PAUSING.");
-                            mHandler.postDelayed(mBrightnessRunnable, 300); // A brief trigger of the proximity sensor
+                            mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
                         } else {
                             mHandler.post(mBrightnessRunnable); // All other cases
                             if (oldState.name().equals("INITIALIZED")) {
