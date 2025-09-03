@@ -13,7 +13,7 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
     Increases the reliability of the native mechanism for turning off the screen. This ensures the AOD turns off consistently when the proximity sensor is covered (e.g., in a pocket or when the phone is placed face down).
 
 * **Fix for Black Screen Battery Drain:**
-    * Prevents battery drain that occurs when the screen is black but the display panel remains active when the device is in a pocket.
+    Prevents battery drain that occurs when the screen is black but the display panel remains active when the device is in a pocket.
 
 ## Compatibility and Risks
 
