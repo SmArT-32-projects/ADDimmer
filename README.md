@@ -12,6 +12,9 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
 * **Improved In-Pocket Detection:**
     Increases the reliability of the native mechanism for turning off the screen. This ensures the AOD turns off consistently when the proximity sensor is covered (e.g., in a pocket or when the phone is placed face down).
 
+* **Fix for Black Screen Battery Drain:**
+    * Prevents battery drain that occurs when the screen is black but the display panel remains active when the device is in a pocket.
+
 ## Compatibility and Risks
 
 This module was developed and tested specifically for the following configuration:
@@ -23,6 +26,7 @@ Functionality on other devices and ROMs is not guaranteed. However, it may theor
 This module is intended to solve the following common issues:
 1.  AOD brightness gets stuck at the level it was when the screen was turned off.
 2.  AOD fails to turn off if the phone is pocketed too quickly, or if the screen is accidentally activated while in a pocket (e.g., by a full-screen notification).
+3.  Excessive battery drain that can occur when the phone is in a pocket, caused by the screen failing to completely power down.
 
 **WARNING:** This module hooks into a core system component (System UI). On incompatible devices, it could theoretically cause instability, such as a System UI crash loop. As a precaution, please have a recovery method available (e.g., the ability to boot into Safe Mode for Magisk/KernelSU to disable the module).
 
