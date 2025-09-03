@@ -9,7 +9,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
-import android.view.Display;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -19,13 +18,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
-    private static final String TAG = "[AD Dimmer] ";
+    public static final String TAG = "[AD Dimmer] ";
     private static final String TARGET_PACKAGE = "com.android.systemui";
 
     private Handler mHandler;
     private Runnable mBrightnessRunnable;
     private volatile boolean isAodActive = false;
     private WakeLock mWakeLock;
+    public static WakeLock mScreenOffFixWakeLock;
     private WakeLock mProximityCheckWakeLock;
     private Runnable mDelayedProximityCheckRunnable;
 
@@ -50,13 +50,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         final Class<?> dozeTriggersClass;
         final Class<?> dozeStateEnum;
-        final Class<?> dozeScreenStateClass;
         final Class<?> dozeServiceClass;
 
         try {
             dozeTriggersClass = XposedHelpers.findClass("com.android.systemui.doze.DozeTriggers", lpparam.classLoader);
             dozeStateEnum = XposedHelpers.findClass("com.android.systemui.doze.DozeMachine$State", lpparam.classLoader);
-            dozeScreenStateClass = XposedHelpers.findClass("com.android.systemui.doze.DozeScreenState", lpparam.classLoader);
             dozeServiceClass = XposedHelpers.findClass("com.android.systemui.doze.DozeService", lpparam.classLoader);
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Failed to find core Doze classes: " + t);
@@ -118,19 +116,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             }
         });
 
-
         // --- Ensure screen is off when in DOZE_AOD_PAUSED ---
-        XposedHelpers.findAndHookMethod(dozeScreenStateClass, "transitionTo", dozeStateEnum, dozeStateEnum, new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                Enum<?> oldState = (Enum<?>) param.args[0];
-                Enum<?> newState = (Enum<?>) param.args[1];
-
-                if (oldState.name().equals("DOZE_AOD_PAUSING") && newState.name().equals("DOZE_AOD_PAUSED")) {
-                    XposedHelpers.callMethod(param.thisObject, "applyScreenState", Display.STATE_OFF);
-                }
-            }
-        });
+        DozeScreenOffFixHook.hook(lpparam);
     }
 
     private void acquireTempWakeLock(Context context, long timeout) {
