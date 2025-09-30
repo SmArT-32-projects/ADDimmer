@@ -18,14 +18,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
-    public static final String TAG = "[AD Dimmer] ";
+    static final String TAG = "[AD Dimmer] ";
     private static final String TARGET_PACKAGE = "com.android.systemui";
 
     private Handler mHandler;
     private Runnable mBrightnessRunnable;
     private volatile boolean isAodActive = false;
     private WakeLock mWakeLock;
-    public static WakeLock mScreenOffFixWakeLock;
+    static WakeLock mScreenOffFixWakeLock;
     private WakeLock mProximityCheckWakeLock;
     private Runnable mDelayedProximityCheckRunnable;
 
@@ -206,9 +206,9 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         private final Object mDozeService;
         private boolean mInitFailed = false;
 
-        // The check interval is not guaranteed, especially on battery;
+        // The check interval is not guaranteed on battery;
         // the next check will occur during the next system maintenance window (1...2 minutes)
-        private static final long CHECK_INTERVAL_MS = 10000;
+        private static final long CHECK_INTERVAL_MS = 5000;
         private static final long SENSOR_TIMEOUT_MS = 400;
 
         BrightnessRunnable(Object dozeTriggersInstance) {
@@ -279,7 +279,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         private int calculateBrightness(float lux) {
             // The brightness values can be any integer, but the system maps them to only a few actual screen brightness levels for AOD
-            if (lux > 200) return 3;
+            if (lux > 190) return 3;
             return 1;
         }
     }
