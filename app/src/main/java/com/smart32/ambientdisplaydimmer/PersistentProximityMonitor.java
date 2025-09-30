@@ -1,6 +1,9 @@
 package com.smart32.ambientdisplaydimmer;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -51,5 +54,14 @@ public class PersistentProximityMonitor {
         sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
         isInitialized = true;
         // XposedBridge.log(TAG + "PersistentProximityMonitor initialized.");
+        BroadcastReceiver screenOnReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            XposedBridge.log(TAG + "ACTION_SCREEN_ON received. Re-registering proximity sensor listener.");
+            sSensorManager.unregisterListener(sProximityListener);
+            sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
+            }
+        };
+        context.registerReceiver(screenOnReceiver, new IntentFilter(Intent.ACTION_SCREEN_ON));
     }
 }
