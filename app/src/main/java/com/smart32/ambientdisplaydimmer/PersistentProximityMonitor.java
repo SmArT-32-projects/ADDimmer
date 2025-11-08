@@ -8,6 +8,8 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.os.Handler;
+import android.os.Looper;
 
 import de.robv.android.xposed.XposedBridge;
 
@@ -18,7 +20,6 @@ public class PersistentProximityMonitor {
     private static final String TAG = "[AD Dimmer] ";
 
     public static volatile float sLastProximityValue = -1f;
-
     private static boolean isInitialized = false;
     private static SensorEventListener sProximityListener;
     private static SensorManager sSensorManager;
@@ -43,7 +44,6 @@ public class PersistentProximityMonitor {
         sProximityListener = new SensorEventListener() {
             @Override
             public void onSensorChanged(SensorEvent event) {
-                // Update the value
                 sLastProximityValue = event.values[0];
             }
             @Override
@@ -54,14 +54,24 @@ public class PersistentProximityMonitor {
         sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
         isInitialized = true;
         // XposedBridge.log(TAG + "PersistentProximityMonitor initialized.");
-        BroadcastReceiver screenOnReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            XposedBridge.log(TAG + "ACTION_SCREEN_ON received. Re-registering proximity sensor listener.");
-            sSensorManager.unregisterListener(sProximityListener);
-            sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
+        BroadcastReceiver userPresentReceiver = new BroadcastReceiver() {
+            private final Handler mHandler = new Handler(Looper.getMainLooper());
+            private final Runnable mReRegister = () -> {
+                try {
+                    sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
+                } catch (Throwable t) {
+                    XposedBridge.log(TAG + "Failed to re-register listener: " + t);
+                }
+            };
+
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                XposedBridge.log(TAG + "ACTION_USER_PRESENT received. Re-registering proximity sensor listener.");
+                sSensorManager.unregisterListener(sProximityListener);
+                mHandler.removeCallbacks(mReRegister);
+                mHandler.postDelayed(mReRegister, 20L);
             }
         };
-        context.registerReceiver(screenOnReceiver, new IntentFilter(Intent.ACTION_SCREEN_ON));
+        context.registerReceiver(userPresentReceiver, new IntentFilter(Intent.ACTION_USER_PRESENT));
     }
 }
