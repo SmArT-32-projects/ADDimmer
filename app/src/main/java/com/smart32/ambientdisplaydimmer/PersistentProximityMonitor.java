@@ -64,9 +64,10 @@ public class PersistentProximityMonitor {
                 }
             };
 
+            // Re-register the listener to prevent its permanent hanging
             @Override
             public void onReceive(Context context, Intent intent) {
-                XposedBridge.log(TAG + "ACTION_USER_PRESENT received. Re-registering proximity sensor listener.");
+                // XposedBridge.log(TAG + "ACTION_USER_PRESENT received. Re-registering proximity sensor listener.");
                 sSensorManager.unregisterListener(sProximityListener);
                 mHandler.removeCallbacks(mReRegister);
                 mHandler.postDelayed(mReRegister, 20L);
