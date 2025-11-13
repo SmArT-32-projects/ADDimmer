@@ -7,6 +7,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.view.Display;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -25,17 +26,48 @@ public class DozeScreenOffFixHook {
 
             XposedHelpers.findAndHookMethod(dozeScreenStateClass, "transitionTo",
                     dozeStateEnum, dozeStateEnum, new XC_MethodHook() {
+
+                        // --- Replace the buggy DOZE_PULSING with turning on the screen ---
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            // Enum<?> oldState = (Enum<?>) param.args[0];
+                            Enum<?> newState = (Enum<?>) param.args[1];
+
+                            if ("DOZE_REQUEST_PULSE".equals(newState.name())) {
+                                // XposedBridge.log(TAG + "Intercepting transition " + oldState + " -> " + newState);
+
+                                Object dozeScreenStateInstance = param.thisObject;
+                                Object dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
+                                if (dozeHost == null) {
+                                    XposedBridge.log(TAG + "Error: DozeHost instance is null during pulse intercept.");
+                                    return;
+                                }
+                                if (!dozeServiceHostClass.isInstance(dozeHost)) {
+                                    XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class during pulse intercept. Found: " + dozeHost.getClass().getName());
+                                    return;
+                                }
+                                Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
+                                Context context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+
+                                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                                long time = SystemClock.uptimeMillis() - 1L;
+                                // Turn on the screen
+                                XposedHelpers.callMethod(pm, "wakeUp", time, 2 /* WAKE_REASON_APPLICATION */, "ADDimmer:PulseOverride");
+
+                                // Prevent the original transition to DOZE_REQUEST_PULSE
+                                param.setResult(null);
+                            }
+                        }
+
+                        // --- Ensure screen is off when in DOZE_AOD_PAUSED ---
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             Enum<?> oldState = (Enum<?>) param.args[0];
                             Enum<?> newState = (Enum<?>) param.args[1];
                             Object dozeScreenStateInstance = param.thisObject;
 
-                            // Check the transition scenario
                             if ("DOZE_AOD_PAUSING".equals(oldState.name()) && "DOZE_AOD_PAUSED".equals(newState.name())) {
-
                                 // XposedBridge.log(TAG + "Intercepting transition: " + oldState + " -> " + newState);
-
                                 Object dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
                                 if (dozeHost == null) {
                                     XposedBridge.log(TAG + "Error: DozeHost instance is null. Aborting hook.");
@@ -63,9 +95,9 @@ public class DozeScreenOffFixHook {
                                     try {
                                         // Turn off the screen
                                         XposedHelpers.callMethod(dozeScreenStateInstance, "applyScreenState", Display.STATE_OFF);
-                                        } catch (Throwable t) {
+                                    } catch (Throwable t) {
                                         XposedBridge.log(TAG + "Error in posted screen off fix: " + t);
-                                        } finally {
+                                    } finally {
                                         // Release the wakelock
                                         if (mScreenOffFixWakeLock.isHeld()) mScreenOffFixWakeLock.release();
                                         // XposedBridge.log(TAG + "Screen off fix finished.");
