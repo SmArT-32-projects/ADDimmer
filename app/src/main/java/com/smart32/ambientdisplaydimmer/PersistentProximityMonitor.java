@@ -53,7 +53,6 @@ public class PersistentProximityMonitor {
         // Register the persistent listener.
         sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
         isInitialized = true;
-        // XposedBridge.log(TAG + "PersistentProximityMonitor initialized.");
         BroadcastReceiver userPresentReceiver = new BroadcastReceiver() {
             private final Handler mHandler = new Handler(Looper.getMainLooper());
             private final Runnable mReRegister = () -> {
