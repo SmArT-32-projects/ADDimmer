@@ -90,7 +90,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 if (newState.name().equals("DOZE_AOD")) {
                     if (!isAodActive) {
                         isAodActive = true;
-
+                        // XposedBridge.log(TAG + "AOD active. Starting checks.");
+                        
                         Object dozeTriggersInstance = param.thisObject;
                         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
 
@@ -99,9 +100,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
                         // Handle the transition to DOZE_AOD based on the previous state
                         if (oldState.name().equals("DOZE_AOD_PAUSED")) {
+                            // XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
                             acquireTempWakeLock((Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext"), 2400L);
                             mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
                         } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
+                            // XposedBridge.log(TAG + "AOD resumed from PAUSING.");
                             mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
                         } else {
                             mHandler.post(mBrightnessRunnable); // All other cases
@@ -113,6 +116,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 } else {
                     if (isAodActive) {
                         isAodActive = false;
+                        // XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
                         stopAodListeners();
                     }
                 }
@@ -264,7 +268,14 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                         float lux = event.values[0];
                         float brightness = calculateBrightness(lux);
                         if (mDozeService != null) {
-                            XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
+                            try {
+                                // Try new float API first (Android 16 QPR2+)
+                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
+                            } catch (Throwable t) {
+                                // Fallback to old int API
+                                int intBrightness = (lux >= 190f) ? 3 : 1;
+                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", intBrightness);
+                            }
                         }
                     }
                     scheduleNext();
