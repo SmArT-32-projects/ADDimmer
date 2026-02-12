@@ -273,7 +273,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
                             } catch (Throwable t) {
                                 // Fallback to old int API
-                                int intBrightness = (lux >= 190f) ? 3 : 1;
+                                int intBrightness = (lux >= 170f) ? 3 : 1;
                                 XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", intBrightness);
                             }
                         }
@@ -309,8 +309,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         private float calculateBrightness(float lux) {
             // Doze brightness expects a float in [0..1].
-            if (lux >= 190f) return 1.0f;
-            return 0.001f;
+            if (lux >= 170f) return 3.0f / 255f;
+            return 1.0f / 255.0f; 
         }
     }
 }
