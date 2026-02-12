@@ -46,8 +46,18 @@ public class DozeScreenOffFixHook {
                                     XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class during pulse intercept. Found: " + dozeHost.getClass().getName());
                                     return;
                                 }
-                                Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
-                                Context context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+                                Context context = null;
+                                try {
+                                    context = (Context) XposedHelpers.getObjectField(dozeHost, "mContext");
+                                } catch (Throwable ignored) { }
+                                if (context == null) {
+                                    Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
+                                    context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+                                }
+                                if (context == null) {
+                                    XposedBridge.log(TAG + "Error: Context is null during pulse intercept.");
+                                    return;
+                                }
 
                                 PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
                                 long time = SystemClock.uptimeMillis() - 1L;
@@ -79,8 +89,19 @@ public class DozeScreenOffFixHook {
                                     param.setResult(null);
                                     return;
                                 }
-                                Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
-                                Context context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+                                Context context = null;
+                                try {
+                                    context = (Context) XposedHelpers.getObjectField(dozeHost, "mContext");
+                                } catch (Throwable ignored) { }
+                                if (context == null) {
+                                    Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
+                                    context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+                                }
+                                if (context == null) {
+                                    XposedBridge.log(TAG + "Error: Context is null during screen off fix.");
+                                    param.setResult(null);
+                                    return;
+                                }
 
                                 // Guarantee method execution by acquiring a wakelock
                                 if (mScreenOffFixWakeLock == null) {

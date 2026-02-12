@@ -35,17 +35,36 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         if (!lpparam.packageName.equals(TARGET_PACKAGE)) return;
 
         // Start the persistent proximity monitor
+        boolean hookedSystemUIApplication = false;
         try {
-            final Class<?> systemUIApplicationClass = XposedHelpers.findClass("com.android.systemui.SystemUIApplication", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(systemUIApplicationClass, "onCreate", new XC_MethodHook() {
+            final Class<?> systemUIApplicationImplClass = XposedHelpers.findClass(
+                    "com.android.systemui.application.impl.SystemUIApplicationImpl",
+                    lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(systemUIApplicationImplClass, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     Context context = (Context) param.thisObject;
                     PersistentProximityMonitor.init(context);
                 }
             });
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "Failed to hook SystemUIApplication.onCreate to initialize monitor: " + t);
+            hookedSystemUIApplication = true;
+        } catch (Throwable ignored) { }
+
+        if (!hookedSystemUIApplication) {
+            try {
+                final Class<?> systemUIApplicationClass = XposedHelpers.findClass(
+                        "com.android.systemui.SystemUIApplication",
+                        lpparam.classLoader);
+                XposedHelpers.findAndHookMethod(systemUIApplicationClass, "onCreate", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Context context = (Context) param.thisObject;
+                        PersistentProximityMonitor.init(context);
+                    }
+                });
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + "Failed to hook SystemUIApplication.onCreate to initialize monitor: " + t);
+            }
         }
 
         final Class<?> dozeTriggersClass;
@@ -72,7 +91,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     if (!isAodActive) {
                         isAodActive = true;
                         // XposedBridge.log(TAG + "AOD active. Starting checks.");
-
+                        
                         Object dozeTriggersInstance = param.thisObject;
                         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
 
@@ -110,7 +129,6 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                 if (isAodActive) {
                     isAodActive = false;
-                    // XposedBridge.log(TAG + "DozeService onDestroy. Forcing stop.");
                     stopAodListeners();
                 }
             }
@@ -247,8 +265,18 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     }
                     mSensorManager.unregisterListener(this);
                     if (event != null && event.values != null && event.values.length > 0) {
-                        int brightness = calculateBrightness(event.values[0]);
-                        if (mDozeService != null) XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
+                        float lux = event.values[0];
+                        float brightness = calculateBrightness(lux);
+                        if (mDozeService != null) {
+                            try {
+                                // Try new float API first (Android 16 QPR2+)
+                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
+                            } catch (Throwable t) {
+                                // Fallback to old int API
+                                int intBrightness = (lux >= 170f) ? 3 : 1;
+                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", intBrightness);
+                            }
+                        }
                     }
                     scheduleNext();
                 }
@@ -269,7 +297,9 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         }
 
         private void scheduleNext() {
-            if (isAodActive) mHandler.postDelayed(this, CHECK_INTERVAL_MS);
+            if (isAodActive) {
+                mHandler.postDelayed(this, CHECK_INTERVAL_MS);
+            }
         }
 
         void stop() {
@@ -277,10 +307,10 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             mHandler.removeCallbacks(this);
         }
 
-        private int calculateBrightness(float lux) {
-            // The brightness values can be any integer, but the system maps them to only a few actual screen brightness levels for AOD
-            if (lux > 190) return 3;
-            return 1;
+        private float calculateBrightness(float lux) {
+            // Doze brightness expects a float in [0..1].
+            if (lux >= 170f) return 3.0f / 255f;
+            return 1.0f / 255.0f; 
         }
     }
 }
