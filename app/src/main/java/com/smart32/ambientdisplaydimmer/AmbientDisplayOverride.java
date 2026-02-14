@@ -12,6 +12,7 @@ import android.os.PowerManager.WakeLock;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
@@ -70,14 +71,32 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         final Class<?> dozeTriggersClass;
         final Class<?> dozeStateEnum;
         final Class<?> dozeServiceClass;
+        final Class<?> dozeScreenBrightnessClass;
 
         try {
             dozeTriggersClass = XposedHelpers.findClass("com.android.systemui.doze.DozeTriggers", lpparam.classLoader);
             dozeStateEnum = XposedHelpers.findClass("com.android.systemui.doze.DozeMachine$State", lpparam.classLoader);
             dozeServiceClass = XposedHelpers.findClass("com.android.systemui.doze.DozeService", lpparam.classLoader);
+            dozeScreenBrightnessClass = XposedHelpers.findClass("com.android.systemui.doze.DozeScreenBrightness", lpparam.classLoader);
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Failed to find core Doze classes: " + t);
             return;
+        }
+
+        // --- Disable native AOD brightness control ---
+        try {
+            XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "setLightSensorEnabled",
+                    boolean.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            param.args[0] = false;
+                        }
+                    });
+            XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "updateBrightnessAndReady", boolean.class, XC_MethodReplacement.DO_NOTHING);
+            XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "onSensorChanged", android.hardware.SensorEvent.class, XC_MethodReplacement.DO_NOTHING);
+            // XposedBridge.log(TAG + "Native AOD brightness control disabled.");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Failed to disable native AOD brightness: " + t);
         }
 
         // --- Lifecycle management (start/stop) ---
@@ -91,7 +110,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     if (!isAodActive) {
                         isAodActive = true;
                         // XposedBridge.log(TAG + "AOD active. Starting checks.");
-                        
+
                         Object dozeTriggersInstance = param.thisObject;
                         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
 
@@ -310,7 +329,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         private float calculateBrightness(float lux) {
             // Doze brightness expects a float in [0..1].
             if (lux >= 170f) return 3.0f / 255f;
-            return 1.0f / 255.0f; 
+            return 1.0f / 255.0f;
         }
     }
 }
