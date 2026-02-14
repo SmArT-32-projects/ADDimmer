@@ -6,7 +6,7 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
 
 * **Adaptive Brightness:**
     Adjusts the AOD brightness between two levels (dim/bright) based on the ambient light sensor. To preserve battery life and avoid breaking `systemui` deep sleep, brightness updates on battery are synchronized with system maintenance windows (typically every 1-2 minutes).
-    * When the device is charging, the update interval is 10 seconds.
+    * When the device is charging, the update interval is 5 seconds.
     * Briefly covering the proximity sensor will trigger an immediate brightness update.
 
 * **Improved In-Pocket Detection:**
@@ -15,18 +15,24 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
 * **Fix for Black Screen Battery Drain:**
     Prevents battery drain that occurs when the screen is black but the display panel remains active when the device is in a pocket.
 
+* **Fix for Black Screen bug upon receiving notifications:**
+    Notifications no longer cause the screen to stay black upon receiving notifications after exiting the Pocket Mode.
+
 ## Compatibility and Risks
 
 This module was developed and tested specifically for the following configuration:
 * **Device:** Sony Xperia 1 V
 * **ROM:** crDroid 11.6 (Android 15)
 
-Functionality on other devices and ROMs is not guaranteed. However, it may theoretically work on other AOSP-based ROMs (Android 15) if the ROM developer has not significantly modified the `com.android.systemui.doze` component implementation.
+**Confirmed compatibility with LineageOS-based ROMs from version 22.2 to 23.2.**
+
+Functionality on other devices and ROMs is not guaranteed. However, it may theoretically work on other AOSP-based ROMs (Android 15 and 16) if the ROM developer has not significantly modified the `com.android.systemui.doze` component implementation.
 
 This module is intended to solve the following common issues:
 1.  AOD brightness gets stuck at the level it was when the screen was turned off.
 2.  AOD fails to turn off if the phone is pocketed too quickly, or if the screen is accidentally activated while in a pocket (e.g., by a full-screen notification).
 3.  Excessive battery drain that can occur when the phone is in a pocket, caused by the screen failing to completely power down.
+4.  Occasional black screen when you take your phone out of your pocket after receiving a notification.
 
 **WARNING:** This module hooks into a core system component (System UI). On incompatible devices, it could theoretically cause instability, such as a System UI crash loop. As a precaution, please have a recovery method available (e.g., the ability to boot into Safe Mode for Magisk/KernelSU to disable the module).
 
