@@ -291,9 +291,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 // Try new float API first (Android 16 QPR2+)
                                 XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
                             } catch (Throwable t) {
-                                // Fallback to old int API
-                                int intBrightness = (lux >= 170f) ? 3 : 1;
-                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", intBrightness);
+                                // Fallback to old API
+                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
                             }
                         }
                     }
@@ -328,7 +327,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         private float calculateBrightness(float lux) {
             // Doze brightness expects a float in [0..1].
-            if (lux >= 170f) return 3.0f / 255f;
+            if (lux >= 160f) return 3.0f / 255f;
             return 1.0f / 255.0f;
         }
     }
