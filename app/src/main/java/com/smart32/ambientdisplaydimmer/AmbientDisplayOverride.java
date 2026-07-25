@@ -9,6 +9,14 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
+import android.os.Environment;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -19,7 +27,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
-    static final String TAG = "[AD Dimmer] ";
+    static final String TAG = "[ADDimmer] ";
     private static final String TARGET_PACKAGE = "com.android.systemui";
 
     private Handler mHandler;
@@ -30,6 +38,29 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     private WakeLock mProximityCheckWakeLock;
     private Runnable mDelayedProximityCheckRunnable;
 
+    private File getConfigFile() {
+        return new File(Environment.getExternalStorageDirectory(), ".ADDimmer_config.txt");
+    }
+    private List<BrightnessConfig> mBrightnessConfigs = new ArrayList<>();
+    private volatile boolean mUseDefaultConfig = true;
+    private long mLastConfigModifiedTime = 0L;
+
+    // Helper class to store and sort config pairs
+    private static class BrightnessConfig implements Comparable<BrightnessConfig> {
+        float luxThreshold;
+        float brightnessNumerator;
+
+        BrightnessConfig(float lux, float numerator) {
+            this.luxThreshold = lux;
+            this.brightnessNumerator = numerator;
+        }
+
+        @Override
+        public int compareTo(BrightnessConfig other) {
+            // Sort in descending order to check highest lux thresholds first
+            return Float.compare(other.luxThreshold, this.luxThreshold);
+        }
+    }
 
     @Override
     public void handleLoadPackage(final LoadPackageParam lpparam) throws Throwable {
@@ -94,7 +125,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     });
             XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "updateBrightnessAndReady", boolean.class, XC_MethodReplacement.DO_NOTHING);
             XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "onSensorChanged", android.hardware.SensorEvent.class, XC_MethodReplacement.DO_NOTHING);
-            // XposedBridge.log(TAG + "Native AOD brightness control disabled.");
+            XposedBridge.log(TAG + "Native AOD brightness control disabled.");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Failed to disable native AOD brightness: " + t);
         }
@@ -109,7 +140,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 if (newState.name().equals("DOZE_AOD")) {
                     if (!isAodActive) {
                         isAodActive = true;
-                        // XposedBridge.log(TAG + "AOD active. Starting checks.");
+                        
+                        // --- Reload configuration every time we enter AOD ---
+                        loadConfig();
+                        
+                        XposedBridge.log(TAG + "AOD active. Starting checks.");
 
                         Object dozeTriggersInstance = param.thisObject;
                         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
@@ -119,11 +154,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
                         // Handle the transition to DOZE_AOD based on the previous state
                         if (oldState.name().equals("DOZE_AOD_PAUSED")) {
-                            // XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
+                            XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
                             acquireTempWakeLock((Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext"), 2400L);
                             mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
                         } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
-                            // XposedBridge.log(TAG + "AOD resumed from PAUSING.");
+                            XposedBridge.log(TAG + "AOD resumed from PAUSING.");
                             mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
                         } else {
                             mHandler.post(mBrightnessRunnable); // All other cases
@@ -135,7 +170,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 } else {
                     if (isAodActive) {
                         isAodActive = false;
-                        // XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
+                        XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
                         stopAodListeners();
                     }
                 }
@@ -157,6 +192,83 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         DozeScreenOffFixHook.hook(lpparam);
     }
 
+    private void loadConfig() {
+        File configFile = getConfigFile();
+
+        if (!configFile.exists()) {
+            createDefaultConfig();
+            mUseDefaultConfig = true;
+            mBrightnessConfigs.clear();
+            mLastConfigModifiedTime = 0L;
+            return;
+        }
+
+        // Check if the file has been modified since the last read
+        long currentModifiedTime = configFile.lastModified();
+        if (currentModifiedTime == mLastConfigModifiedTime && !mBrightnessConfigs.isEmpty()) {
+            // File hasn't changed, use cached configuration
+            return;
+        }
+
+        List<BrightnessConfig> newConfigs = new ArrayList<>();
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(configFile))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+
+                String[] parts = line.split(":");
+                if (parts.length == 2) {
+                    float numerator = Float.parseFloat(parts[0].trim());
+                    float lux = Float.parseFloat(parts[1].trim());
+
+                    if (numerator < 0 || numerator > 255 || lux < 0) {
+                        throw new IllegalArgumentException("Values out of bounds (0-255 expected)");
+                    }
+                    newConfigs.add(new BrightnessConfig(lux, numerator));
+                }
+            }
+
+            if (newConfigs.size() > 10) {
+                XposedBridge.log(TAG + "Config error: More than 10 pairs defined. Falling back to defaults.");
+                mUseDefaultConfig = true;
+                mBrightnessConfigs.clear();
+            } else if (newConfigs.isEmpty()) {
+                XposedBridge.log(TAG + "Config error: No valid pairs found. Falling back to defaults.");
+                mUseDefaultConfig = true;
+                mBrightnessConfigs.clear();
+            } else {
+                Collections.sort(newConfigs);
+                mBrightnessConfigs = newConfigs;
+                mUseDefaultConfig = false;
+
+                mLastConfigModifiedTime = currentModifiedTime;
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + "Config parsing error: " + e.getMessage() + ". Falling back to defaults.");
+            mUseDefaultConfig = true;
+            mBrightnessConfigs.clear(); // Drop any previously cached data on read failure
+        }
+    }
+
+    private void createDefaultConfig() {
+        File file = getConfigFile();
+        try {
+            if (file.createNewFile()) {
+                try (FileWriter writer = new FileWriter(file)) {
+                    writer.write("# Ambient Display Dimmer Configuration\n");
+                    writer.write("# Format: <screen_brightness_numerator>:<lux_threshold>\n");
+                    writer.write("# Maximum allowed pairs: 10. Behavior is stepwise (no interpolation).\n");
+                    writer.write("1:0\n");
+                    writer.write("3:160\n");
+                }
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + "Failed to create default config at " + file.getAbsolutePath() + ": " + e.getMessage());
+        }
+    }
+    
     private void acquireTempWakeLock(Context context, long timeout) {
         try {
             if (mWakeLock == null) {
@@ -286,6 +398,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     if (event != null && event.values != null && event.values.length > 0) {
                         float lux = event.values[0];
                         float brightness = calculateBrightness(lux);
+                        XposedBridge.log(TAG + "Lux detected: " + lux + " - Brightness set to: " + brightness);
                         if (mDozeService != null) {
                             try {
                                 // Try new float API first (Android 16 QPR2+)
@@ -326,9 +439,22 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         }
 
         private float calculateBrightness(float lux) {
-            // Doze brightness expects a float in [0..1].
-            if (lux >= 160f) return 3.0f / 255f;
-            return 1.0f / 255.0f;
+            // Fallback to default logic if config failed or is absent
+            if (mUseDefaultConfig || mBrightnessConfigs == null || mBrightnessConfigs.isEmpty()) {
+                if (lux >= 160f) return 3.0f / 255f;
+                return 1.0f / 255.0f;
+            }
+
+            // Stepwise logic using sorted custom config (descending order)
+            for (BrightnessConfig config : mBrightnessConfigs) {
+                if (lux >= config.luxThreshold) {
+                    return config.brightnessNumerator / 255.0f;
+                }
+            }
+
+            // Safety fallback: if current lux is lower than the lowest defined threshold,
+            // return the brightness of the lowest available threshold (last element in sorted list)
+            return mBrightnessConfigs.get(mBrightnessConfigs.size() - 1).brightnessNumerator / 255.0f;
         }
     }
 }
