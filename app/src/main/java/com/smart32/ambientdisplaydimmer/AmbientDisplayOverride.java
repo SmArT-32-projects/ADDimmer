@@ -63,39 +63,57 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     }
 
     @Override
-    public void handleLoadPackage(final LoadPackageParam lpparam) throws Throwable {
+    public void handleLoadPackage(final LoadPackageParam lpparam) {
         if (!lpparam.packageName.equals(TARGET_PACKAGE)) return;
 
         // Start the persistent proximity monitor
         boolean hookedSystemUIApplication = false;
+
         try {
-            final Class<?> systemUIApplicationImplClass = XposedHelpers.findClass(
-                    "com.android.systemui.application.impl.SystemUIApplicationImpl",
+            final Class<?> systemUIApplicationClass = XposedHelpers.findClass(
+                    "com.android.systemui.SystemUIApplication",
                     lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(systemUIApplicationImplClass, "onCreate", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Context context = (Context) param.thisObject;
-                    PersistentProximityMonitor.init(context);
-                }
-            });
+            try {
+                XposedHelpers.findAndHookMethod(systemUIApplicationClass, "onCreate", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Context context = (Context) param.thisObject;
+                            PersistentProximityMonitor.init(context);
+                        } catch (Throwable t) {
+                            CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "SystemUI onCreate init");
+                        }
+                    }
+                });
+            } catch (Throwable t) {
+                CrashAnalyzer.analyzeAndLog(t, systemUIApplicationClass, "Find SystemUI onCreate");
+            }
             hookedSystemUIApplication = true;
         } catch (Throwable ignored) { }
 
         if (!hookedSystemUIApplication) {
             try {
-                final Class<?> systemUIApplicationClass = XposedHelpers.findClass(
-                        "com.android.systemui.SystemUIApplication",
+                final Class<?> systemUIApplicationImplClass = XposedHelpers.findClass(
+                        "com.android.systemui.application.impl.SystemUIApplicationImpl",
                         lpparam.classLoader);
-                XposedHelpers.findAndHookMethod(systemUIApplicationClass, "onCreate", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        Context context = (Context) param.thisObject;
-                        PersistentProximityMonitor.init(context);
-                    }
-                });
+                try {
+                    XposedHelpers.findAndHookMethod(systemUIApplicationImplClass, "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Context context = (Context) param.thisObject;
+                                PersistentProximityMonitor.init(context);
+                            } catch (Throwable t) {
+                                CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "SystemUI onCreate init");
+                            }
+                        }
+                    });
+                } catch (Throwable t) {
+                    CrashAnalyzer.analyzeAndLog(t, systemUIApplicationImplClass, "Find SystemUI onCreate");
+                }
             } catch (Throwable t) {
-                XposedBridge.log(TAG + "Failed to hook SystemUIApplication.onCreate to initialize monitor: " + t);
+                CrashAnalyzer.analyzeClassNotFound(t, lpparam.classLoader, "com.android.systemui.SystemUIApplication", "Find SystemUIApplication");
+                CrashAnalyzer.analyzeClassNotFound(t, lpparam.classLoader, "com.android.systemui.application.impl.SystemUIApplicationImpl", "Find SystemUIApplicationImpl");
             }
         }
 
@@ -110,7 +128,12 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             dozeServiceClass = XposedHelpers.findClass("com.android.systemui.doze.DozeService", lpparam.classLoader);
             dozeScreenBrightnessClass = XposedHelpers.findClass("com.android.systemui.doze.DozeScreenBrightness", lpparam.classLoader);
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Failed to find core Doze classes: " + t);
+            String errorMsg = t.getMessage();
+            String expectedClass = "com.android.systemui.doze.DozeTriggers";
+            if (errorMsg != null && errorMsg.contains("com.android.systemui.doze")) {
+                expectedClass = errorMsg;
+            }
+            CrashAnalyzer.analyzeClassNotFound(t, lpparam.classLoader, expectedClass, "Find core Doze classes");
             return;
         }
 
@@ -127,66 +150,82 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "onSensorChanged", android.hardware.SensorEvent.class, XC_MethodReplacement.DO_NOTHING);
             XposedBridge.log(TAG + "Native AOD brightness control disabled.");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Failed to disable native AOD brightness: " + t);
+            CrashAnalyzer.analyzeAndLog(t, dozeScreenBrightnessClass, "Disable native AOD brightness");
         }
 
         // --- Lifecycle management (start/stop) ---
-        XposedHelpers.findAndHookMethod(dozeTriggersClass, "transitionTo", dozeStateEnum, dozeStateEnum, new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                Enum<?> oldState = (Enum<?>) param.args[0];
-                Enum<?> newState = (Enum<?>) param.args[1];
+        try {
+            XposedHelpers.findAndHookMethod(dozeTriggersClass, "transitionTo", dozeStateEnum, dozeStateEnum, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Enum<?> oldState = (Enum<?>) param.args[0];
+                        Enum<?> newState = (Enum<?>) param.args[1];
 
-                if (newState.name().equals("DOZE_AOD")) {
-                    if (!isAodActive) {
-                        isAodActive = true;
+                        if (newState.name().equals("DOZE_AOD")) {
+                            if (!isAodActive) {
+                                isAodActive = true;
                         
-                        // --- Reload configuration every time we enter AOD ---
-                        loadConfig();
+                                // --- Reload configuration every time we enter AOD ---
+                                loadConfig();
                         
-                        XposedBridge.log(TAG + "AOD active. Starting checks.");
+                                XposedBridge.log(TAG + "AOD active. Starting checks.");
 
-                        Object dozeTriggersInstance = param.thisObject;
-                        if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
+                                Object dozeTriggersInstance = param.thisObject;
+                                if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
 
-                        mBrightnessRunnable = new BrightnessRunnable(dozeTriggersInstance);
-                        mHandler.removeCallbacksAndMessages(null);
+                                mBrightnessRunnable = new BrightnessRunnable(dozeTriggersInstance);
+                                mHandler.removeCallbacksAndMessages(null);
 
-                        // Handle the transition to DOZE_AOD based on the previous state
-                        if (oldState.name().equals("DOZE_AOD_PAUSED")) {
-                            XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
-                            acquireTempWakeLock((Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext"), 2400L);
-                            mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
-                        } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
-                            XposedBridge.log(TAG + "AOD resumed from PAUSING.");
-                            mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
+                                // Handle the transition to DOZE_AOD based on the previous state
+                                if (oldState.name().equals("DOZE_AOD_PAUSED")) {
+                                    XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
+                                    acquireTempWakeLock((Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext"), 2400L);
+                                    mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
+                                } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
+                                    XposedBridge.log(TAG + "AOD resumed from PAUSING.");
+                                    mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
+                                } else {
+                                    mHandler.post(mBrightnessRunnable); // All other cases
+                                    if (oldState.name().equals("INITIALIZED")) {
+                                        startDelayedProximityCheck(param.thisObject, dozeStateEnum); // Screen turned off by the power button or timeout
+                                    }
+                                }
+                            }
                         } else {
-                            mHandler.post(mBrightnessRunnable); // All other cases
-                            if (oldState.name().equals("INITIALIZED")) {
-                                startDelayedProximityCheck(param.thisObject); // Screen turned off by the power button or timeout
+                            if (isAodActive) {
+                                isAodActive = false;
+                                XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
+                                stopAodListeners();
                             }
                         }
-                    }
-                } else {
-                    if (isAodActive) {
-                        isAodActive = false;
-                        XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
-                        stopAodListeners();
+                    } catch (Throwable t) {
+                        CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "transitionTo callback execution");
                     }
                 }
-            }
-        });
+            });
+        } catch (Throwable t) {
+            CrashAnalyzer.analyzeAndLog(t, dozeTriggersClass, "Hook transitionTo");
+        }
 
         // --- Ensure stop on service destruction ---
-        XposedHelpers.findAndHookMethod(dozeServiceClass, "onDestroy", new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                if (isAodActive) {
-                    isAodActive = false;
-                    stopAodListeners();
+        try {
+            XposedHelpers.findAndHookMethod(dozeServiceClass, "onDestroy", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        if (isAodActive) {
+                            isAodActive = false;
+                            stopAodListeners();
+                        }
+                    } catch (Throwable t) {
+                        CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "DozeService onDestroy cleanup");
+                    }
                 }
-            }
-        });
+            });
+        } catch (Throwable t) {
+            CrashAnalyzer.analyzeAndLog(t, dozeServiceClass, "Hook onDestroy");
+        }
 
         // --- Ensure screen is off when in DOZE_AOD_PAUSED ---
         DozeScreenOffFixHook.hook(lpparam);
@@ -298,7 +337,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     }
 
     // --- Force transition to DOZE_AOD_PAUSING if the phone is "in pocket" ---
-    private void startDelayedProximityCheck(final Object dozeTriggersInstance) {
+    private void startDelayedProximityCheck(final Object dozeTriggersInstance, final Class<?> stateEnum) {
         try {
             final Context context = (Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext");
             if (context == null) return;
@@ -318,11 +357,12 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 if (isAodActive && PersistentProximityMonitor.sLastProximityValue == 0.0f) {
                     try {
                         Object dozeMachine = XposedHelpers.getObjectField(dozeTriggersInstance, "mMachine");
-                        Class<?> stateEnum = XposedHelpers.findClass("com.android.systemui.doze.DozeMachine$State", dozeTriggersInstance.getClass().getClassLoader());
                         @SuppressWarnings("rawtypes")
                         Enum targetState = Enum.valueOf((Class) stateEnum, "DOZE_AOD_PAUSING");
                         XposedHelpers.callMethod(dozeMachine, "requestState", targetState);
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable t) {
+                        CrashAnalyzer.analyzeAndLog(t, dozeTriggersInstance.getClass(), "startDelayedProximityCheck (requestState)");
+                    }
                 }
                 // Release the wakelock regardless of the outcome
                 stopProximityCheck();
@@ -332,7 +372,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             mHandler.postDelayed(mDelayedProximityCheckRunnable, 4400L);
 
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Failed to check proximity: " + t);
+            CrashAnalyzer.analyzeAndLog(t, dozeTriggersInstance.getClass(), "startDelayedProximityCheck (outer init)");
             stopProximityCheck(); // Cleanup in case of an error
         }
     }
@@ -344,7 +384,9 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             mDelayedProximityCheckRunnable = null;
         }
         if (mProximityCheckWakeLock != null && mProximityCheckWakeLock.isHeld()) {
-            mProximityCheckWakeLock.release();
+            try {
+                mProximityCheckWakeLock.release();
+            } catch (Throwable ignored) { }
         }
     }
 
@@ -373,7 +415,10 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
                     if (sm != null) ls = sm.getDefaultSensor(Sensor.TYPE_LIGHT);
                 } else { mInitFailed = true; }
-            } catch (Throwable t) { mInitFailed = true; }
+            } catch (Throwable t) {
+                mInitFailed = true;
+                CrashAnalyzer.analyzeAndLog(t, dozeTriggersInstance.getClass(), "BrightnessRunnable Init");
+            }
             mContext = ctx;
             mDozeService = dozeSvc;
             mSensorManager = sm;
@@ -405,7 +450,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
                             } catch (Throwable t) {
                                 // Fallback to old API
-                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
+                                try {
+                                    XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
+                                } catch (Throwable fallbackT) {
+                                    CrashAnalyzer.analyzeAndLog(fallbackT, mDozeService.getClass(), "Set Doze Screen Brightness APIs");
+                                }
                             }
                         }
                     }
