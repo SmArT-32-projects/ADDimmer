@@ -174,7 +174,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 Object dozeTriggersInstance = param.thisObject;
                                 if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
 
-                                mBrightnessRunnable = new BrightnessRunnable(dozeTriggersInstance);
+                                mBrightnessRunnable = new BrightnessRunnable(dozeTriggersInstance, dozeServiceClass);
                                 mHandler.removeCallbacksAndMessages(null);
 
                                 // Handle the transition to DOZE_AOD based on the previous state
@@ -355,13 +355,16 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             mDelayedProximityCheckRunnable = () -> {
                 // Check the value from the persistent monitor
                 if (isAodActive && PersistentProximityMonitor.sLastProximityValue == 0.0f) {
+                    Object dozeMachine = null;
                     try {
-                        Object dozeMachine = XposedHelpers.getObjectField(dozeTriggersInstance, "mMachine");
+                        dozeMachine = XposedHelpers.getObjectField(dozeTriggersInstance, "mMachine");
                         @SuppressWarnings("rawtypes")
                         Enum targetState = Enum.valueOf((Class) stateEnum, "DOZE_AOD_PAUSING");
                         XposedHelpers.callMethod(dozeMachine, "requestState", targetState);
                     } catch (Throwable t) {
-                        CrashAnalyzer.analyzeAndLog(t, dozeTriggersInstance.getClass(), "startDelayedProximityCheck (requestState)");
+                        // Dump the DozeMachine if available, otherwise fallback to DozeTriggers
+                        Class<?> targetClass = dozeMachine != null ? dozeMachine.getClass() : dozeTriggersInstance.getClass();
+                        CrashAnalyzer.analyzeAndLog(t, targetClass, "startDelayedProximityCheck (requestState)");
                     }
                 }
                 // Release the wakelock regardless of the outcome
@@ -395,6 +398,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         private final SensorManager mSensorManager;
         private final Sensor mLightSensor;
         private final Object mDozeService;
+        private final Class<?> mDozeServiceClass;
         private boolean mInitFailed = false;
 
         // The check interval is not guaranteed on battery;
@@ -402,7 +406,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         private static final long CHECK_INTERVAL_MS = 5000;
         private static final long SENSOR_TIMEOUT_MS = 400;
 
-        BrightnessRunnable(Object dozeTriggersInstance) {
+        BrightnessRunnable(Object dozeTriggersInstance, Class<?> dozeServiceClass) {
             Context ctx = null;
             Object dozeSvc = null;
             SensorManager sm = null;
@@ -421,11 +425,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             }
             mContext = ctx;
             mDozeService = dozeSvc;
+            mDozeServiceClass = dozeServiceClass;
             mSensorManager = sm;
             mLightSensor = ls;
             if (mSensorManager == null || mLightSensor == null) mInitFailed = true;
         }
-
 
         @Override
         public void run() {
@@ -453,7 +457,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 try {
                                     XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
                                 } catch (Throwable fallbackT) {
-                                    CrashAnalyzer.analyzeAndLog(fallbackT, mDozeService.getClass(), "Set Doze Screen Brightness APIs");
+                                    CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass, "Set Doze Screen Brightness APIs");
                                 }
                             }
                         }
