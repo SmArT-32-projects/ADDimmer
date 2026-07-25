@@ -14,122 +14,190 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
-
 public class DozeScreenOffFixHook {
 
-    public static void hook(final LoadPackageParam lpparam) {
+    // --- Helper method to resolve context ---
+    private static Context resolveContext(Object dozeHost) {
+        Context context = null;
+
+        // Try via mCentralSurfaces
         try {
+            Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
+            if (centralSurfaces != null) {
+                context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
+            }
+        } catch (Throwable ignored) {
+            XposedBridge.log(TAG + "mCentralSurfaces approach failed, trying direct mContext fallback...");
+        }
 
-            final Class<?> dozeScreenStateClass = XposedHelpers.findClass("com.android.systemui.doze.DozeScreenState", lpparam.classLoader);
-            final Class<?> dozeStateEnum = XposedHelpers.findClass("com.android.systemui.doze.DozeMachine$State", lpparam.classLoader);
-            final Class<?> dozeServiceHostClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.DozeServiceHost", lpparam.classLoader);
+        // Fallback to direct mContext on DozeHost
+        if (context == null) {
+            try {
+                context = (Context) XposedHelpers.getObjectField(dozeHost, "mContext");
+            } catch (Throwable t) {
+                CrashAnalyzer.analyzeAndLog(t, dozeHost.getClass(), "Resolve Context via direct mContext");
+            }
+        }
 
+        return context;
+    }
+
+    public static void hook(final LoadPackageParam lpparam) {
+        final Class<?> dozeScreenStateClass;
+        final Class<?> dozeStateEnum;
+        final Class<?> dozeServiceHostClass;
+
+        try {
+            dozeScreenStateClass = XposedHelpers.findClass("com.android.systemui.doze.DozeScreenState", lpparam.classLoader);
+            dozeStateEnum = XposedHelpers.findClass("com.android.systemui.doze.DozeMachine$State", lpparam.classLoader);
+            dozeServiceHostClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.DozeServiceHost", lpparam.classLoader);
+        } catch (Throwable t) {
+            CrashAnalyzer.analyzeClassNotFound(t, lpparam.classLoader, "com.android.systemui.doze.DozeScreenState", "Find DozeScreenOffFix classes");
+            return;
+        }
+
+        try {
             XposedHelpers.findAndHookMethod(dozeScreenStateClass, "transitionTo",
                     dozeStateEnum, dozeStateEnum, new XC_MethodHook() {
 
                         // --- Replace the buggy DOZE_PULSING with turning on the screen ---
                         @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            // Enum<?> oldState = (Enum<?>) param.args[0];
-                            Enum<?> newState = (Enum<?>) param.args[1];
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                Enum<?> oldState = (Enum<?>) param.args[0];
+                                Enum<?> newState = (Enum<?>) param.args[1];
 
-                            if ("DOZE_REQUEST_PULSE".equals(newState.name())) {
-                                // XposedBridge.log(TAG + "Intercepting transition " + oldState + " -> " + newState);
+                                if ("DOZE_REQUEST_PULSE".equals(newState.name())) {
+                                    XposedBridge.log(TAG + "Intercepting transition " + oldState + " -> " + newState);
 
-                                Object dozeScreenStateInstance = param.thisObject;
-                                Object dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
-                                if (dozeHost == null) {
-                                    XposedBridge.log(TAG + "Error: DozeHost instance is null during pulse intercept.");
-                                    return;
-                                }
-                                if (!dozeServiceHostClass.isInstance(dozeHost)) {
-                                    XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class during pulse intercept. Found: " + dozeHost.getClass().getName());
-                                    return;
-                                }
-                                Context context = null;
-                                try {
-                                    context = (Context) XposedHelpers.getObjectField(dozeHost, "mContext");
-                                } catch (Throwable ignored) { }
-                                if (context == null) {
-                                    Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
-                                    context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
-                                }
-                                if (context == null) {
-                                    XposedBridge.log(TAG + "Error: Context is null during pulse intercept.");
-                                    return;
-                                }
+                                    Object dozeScreenStateInstance = param.thisObject;
+                                    Object dozeHost = null;
 
-                                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                                long time = SystemClock.uptimeMillis() - 1L;
-                                // Turn on the screen
-                                XposedHelpers.callMethod(pm, "wakeUp", time, 2 /* WAKE_REASON_APPLICATION */, "ADDimmer:PulseOverride");
+                                    try {
+                                        dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
+                                    } catch (Throwable t) {
+                                        CrashAnalyzer.analyzeAndLog(t, dozeScreenStateInstance.getClass(), "Find mDozeHost in DozeScreenState");
+                                        return;
+                                    }
 
-                                // Prevent the original transition to DOZE_REQUEST_PULSE
-                                param.setResult(null);
+                                    if (dozeHost == null) {
+                                        XposedBridge.log(TAG + "Error: DozeHost instance is null during pulse intercept.");
+                                        return;
+                                    }
+                                    if (!dozeServiceHostClass.isInstance(dozeHost)) {
+                                        XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class during pulse intercept. Found: " + dozeHost.getClass().getName());
+                                        return;
+                                    }
+
+                                    Context context = resolveContext(dozeHost);
+                                    if (context == null) {
+                                        XposedBridge.log(TAG + "Error: Context is null during pulse intercept.");
+                                        return;
+                                    }
+
+                                    PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                                    if (pm == null) {
+                                        XposedBridge.log(TAG + "Error: PowerManager is null during pulse intercept.");
+                                        return;
+                                    }
+
+                                    try {
+                                        long time = SystemClock.uptimeMillis() - 1L;
+                                        // Turn on the screen
+                                        XposedHelpers.callMethod(pm, "wakeUp", time, 2 /* WAKE_REASON_APPLICATION */, "ADDimmer:PulseOverride");
+                                    } catch (Throwable t) {
+                                        CrashAnalyzer.analyzeAndLog(t, pm.getClass(), "PowerManager wakeUp");
+                                    }
+
+                                    // Prevent the original transition to DOZE_REQUEST_PULSE
+                                    param.setResult(null);
+                                    XposedBridge.log(TAG + "DOZE_PULSING fix finished.");
+                                }
+                            } catch (Throwable t) {
+                                CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "DozeScreenState transitionTo (before)");
                             }
                         }
 
                         // --- Ensure screen is off when in DOZE_AOD_PAUSED ---
                         @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            Enum<?> oldState = (Enum<?>) param.args[0];
-                            Enum<?> newState = (Enum<?>) param.args[1];
-                            Object dozeScreenStateInstance = param.thisObject;
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Enum<?> oldState = (Enum<?>) param.args[0];
+                                Enum<?> newState = (Enum<?>) param.args[1];
+                                Object dozeScreenStateInstance = param.thisObject;
 
-                            if ("DOZE_AOD_PAUSING".equals(oldState.name()) && "DOZE_AOD_PAUSED".equals(newState.name())) {
-                                // XposedBridge.log(TAG + "Intercepting transition: " + oldState + " -> " + newState);
-                                Object dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
-                                if (dozeHost == null) {
-                                    XposedBridge.log(TAG + "Error: DozeHost instance is null. Aborting hook.");
-                                    param.setResult(null);
-                                    return;
-                                }
-                                if (!dozeServiceHostClass.isInstance(dozeHost)) {
-                                    XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class. Found: " + dozeHost.getClass().getName());
-                                    param.setResult(null);
-                                    return;
-                                }
-                                Context context = null;
-                                try {
-                                    context = (Context) XposedHelpers.getObjectField(dozeHost, "mContext");
-                                } catch (Throwable ignored) { }
-                                if (context == null) {
-                                    Object centralSurfaces = XposedHelpers.getObjectField(dozeHost, "mCentralSurfaces");
-                                    context = (Context) XposedHelpers.getObjectField(centralSurfaces, "mContext");
-                                }
-                                if (context == null) {
-                                    XposedBridge.log(TAG + "Error: Context is null during screen off fix.");
-                                    param.setResult(null);
-                                    return;
-                                }
+                                if ("DOZE_AOD_PAUSING".equals(oldState.name()) && "DOZE_AOD_PAUSED".equals(newState.name())) {
+                                    XposedBridge.log(TAG + "Intercepting transition: " + oldState + " -> " + newState);
 
-                                // Guarantee method execution by acquiring a wakelock
-                                if (mScreenOffFixWakeLock == null) {
-                                    PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                                    mScreenOffFixWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ADDimmer:ScreenOffFix");
-                                    mScreenOffFixWakeLock.setReferenceCounted(false);
-                                }
-                                mScreenOffFixWakeLock.acquire(1000L);
-
-                                // Send the task to the end of the queue
-                                new Handler(Looper.getMainLooper()).post(() -> {
+                                    Object dozeHost = null;
                                     try {
-                                        // Turn off the screen
-                                        XposedHelpers.callMethod(dozeScreenStateInstance, "applyScreenState", Display.STATE_OFF);
+                                        dozeHost = XposedHelpers.getObjectField(dozeScreenStateInstance, "mDozeHost");
                                     } catch (Throwable t) {
-                                        XposedBridge.log(TAG + "Error in posted screen off fix: " + t);
-                                    } finally {
-                                        // Release the wakelock
-                                        if (mScreenOffFixWakeLock.isHeld()) mScreenOffFixWakeLock.release();
-                                        // XposedBridge.log(TAG + "Screen off fix finished.");
+                                        CrashAnalyzer.analyzeAndLog(t, dozeScreenStateInstance.getClass(), "Find mDozeHost in DozeScreenState");
+                                        param.setResult(null);
+                                        return;
                                     }
-                                });
+
+                                    if (dozeHost == null) {
+                                        XposedBridge.log(TAG + "Error: DozeHost instance is null. Aborting hook.");
+                                        param.setResult(null);
+                                        return;
+                                    }
+                                    if (!dozeServiceHostClass.isInstance(dozeHost)) {
+                                        XposedBridge.log(TAG + "Error: DozeHost is not the expected DozeServiceHost class. Found: " + dozeHost.getClass().getName());
+                                        param.setResult(null);
+                                        return;
+                                    }
+
+                                    Context context = resolveContext(dozeHost);
+                                    if (context == null) {
+                                        XposedBridge.log(TAG + "Error: Context is null during screen off fix.");
+                                        param.setResult(null);
+                                        return;
+                                    }
+
+                                    // Guarantee method execution by acquiring a wakelock
+                                    if (mScreenOffFixWakeLock == null) {
+                                        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                                        if (pm != null) {
+                                            mScreenOffFixWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ADDimmer:ScreenOffFix");
+                                            mScreenOffFixWakeLock.setReferenceCounted(false);
+                                        } else {
+                                            XposedBridge.log(TAG + "Error: PowerManager is null, cannot acquire WakeLock.");
+                                            param.setResult(null);
+                                            return;
+                                        }
+                                    }
+
+                                    if (mScreenOffFixWakeLock != null) {
+                                        mScreenOffFixWakeLock.acquire(1000L);
+                                    }
+
+                                    // Send the task to the end of the queue
+                                    new Handler(Looper.getMainLooper()).post(() -> {
+                                        try {
+                                            // Turn off the screen
+                                            XposedHelpers.callMethod(dozeScreenStateInstance, "applyScreenState", Display.STATE_OFF);
+                                        } catch (Throwable t) {
+                                            CrashAnalyzer.analyzeAndLog(t, dozeScreenStateInstance.getClass(), "Call applyScreenState");
+                                        } finally {
+                                            // Release the wakelock
+                                            if (mScreenOffFixWakeLock != null && mScreenOffFixWakeLock.isHeld()) {
+                                                try {
+                                                    mScreenOffFixWakeLock.release();
+                                                } catch (Throwable ignored) { }
+                                            }
+                                            XposedBridge.log(TAG + "Screen off fix finished.");
+                                        }
+                                    });
+                                }
+                            } catch (Throwable t) {
+                                CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "DozeScreenState transitionTo (after)");
                             }
                         }
                     });
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "FATAL: Failed to initialize DozeScreenOffFixHook.");
-            XposedBridge.log(t);
+            CrashAnalyzer.analyzeAndLog(t, dozeScreenStateClass, "Hook DozeScreenState transitionTo");
         }
     }
 }
