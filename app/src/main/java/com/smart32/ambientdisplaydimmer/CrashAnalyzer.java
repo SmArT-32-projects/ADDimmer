@@ -3,7 +3,10 @@ package com.smart32.ambientdisplaydimmer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Set;
 
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -11,6 +14,10 @@ import de.robv.android.xposed.XposedHelpers;
 public class CrashAnalyzer {
     private static final String TAG = "[ADDimmer Analyzer] ";
     private static final int MAX_DUMP_CLASSES = 250; // Safeguard against logcat flooding
+
+    // Caches to prevent logcat flooding
+    private static final Set<String> sDumpedClasses = Collections.synchronizedSet(new HashSet<>());
+    private static final Set<String> sScannedPackages = Collections.synchronizedSet(new HashSet<>());
 
     // Analyze missing methods/fields
     public static void analyzeAndLog(Throwable t, Class<?> targetClass, String contextInfo) {
@@ -22,7 +29,15 @@ public class CrashAnalyzer {
         }
 
         if (t instanceof NoSuchMethodError || t instanceof NoSuchFieldError || t instanceof NoSuchMethodException || t instanceof NoSuchFieldException) {
-            XposedBridge.log(TAG + "=== DUMPING CLASS STRUCTURE: " + targetClass.getName() + " ===");
+            String className = targetClass.getName();
+
+            // Atomic check and add
+            if (!sDumpedClasses.add(className)) {
+                XposedBridge.log(TAG + "Class structure for [" + className + "] already dumped. Skipping.");
+                return;
+            }
+
+            XposedBridge.log(TAG + "=== DUMPING CLASS STRUCTURE: " + className + " ===");
             dumpFields(targetClass);
             dumpMethods(targetClass);
             XposedBridge.log(TAG + "=== END OF DUMP ===");
@@ -38,9 +53,6 @@ public class CrashAnalyzer {
             return;
         }
 
-        // Dump ClassLoader hierarchy to identify custom OEM loaders (e.g., HyperOS/MIUI)
-        dumpClassLoaderHierarchy(classLoader);
-
         // Extract target package for scanning
         int lastDotIndex = expectedClassName.lastIndexOf('.');
         if (lastDotIndex == -1) {
@@ -48,6 +60,15 @@ public class CrashAnalyzer {
             return;
         }
         String targetPackage = expectedClassName.substring(0, lastDotIndex);
+
+        // Atomic check and add
+        if (!sScannedPackages.add(targetPackage)) {
+            XposedBridge.log(TAG + "Package [" + targetPackage + "] already scanned. Skipping DEX analysis.");
+            return;
+        }
+
+        // Dump ClassLoader hierarchy to identify custom OEM loaders
+        dumpClassLoaderHierarchy(classLoader);
 
         XposedBridge.log(TAG + "=== SCANNING DEX FOR PACKAGE: " + targetPackage + " ===");
         try {
