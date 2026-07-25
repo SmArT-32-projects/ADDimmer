@@ -29,7 +29,7 @@ public class CrashAnalyzer {
         }
     }
 
-    // Analyze missing classes dynamically
+    // Analyze missing classes
     public static void analyzeClassNotFound(Throwable t, ClassLoader classLoader, String expectedClassName, String contextInfo) {
         XposedBridge.log(TAG + "ClassNotFound Error in [" + contextInfo + "]: " + t.toString());
 
@@ -38,10 +38,10 @@ public class CrashAnalyzer {
             return;
         }
 
-        // 1. Dump ClassLoader hierarchy to identify custom OEM loaders (e.g., HyperOS/MIUI)
+        // Dump ClassLoader hierarchy to identify custom OEM loaders (e.g., HyperOS/MIUI)
         dumpClassLoaderHierarchy(classLoader);
 
-        // 2. Extract target package for scanning
+        // Extract target package for scanning
         int lastDotIndex = expectedClassName.lastIndexOf('.');
         if (lastDotIndex == -1) {
             XposedBridge.log(TAG + "Invalid class name format: " + expectedClassName);
@@ -99,7 +99,7 @@ public class CrashAnalyzer {
                         XposedBridge.log(TAG + "  Found: " + className);
                         matchCount++;
 
-                        // 3. Limit the output to prevent huge logs
+                        // Limit the output to prevent huge logs
                         if (matchCount >= MAX_DUMP_CLASSES) {
                             XposedBridge.log(TAG + "  [WARNING] Max class limit (" + MAX_DUMP_CLASSES + ") reached. Truncating output.");
                             limitReached = true;
