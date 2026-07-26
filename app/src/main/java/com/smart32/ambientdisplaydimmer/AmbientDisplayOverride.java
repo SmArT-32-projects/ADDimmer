@@ -337,6 +337,14 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     }
 
     // --- Force transition to DOZE_AOD_PAUSING if the phone is "in pocket" ---
+
+    // On Xperia 1 V (Lineage-based ROM), keeping a persistent proximity listener active appears to
+    // allow SystemUI to detect the current proximity state immediately after registering its own
+    // listener, causing it to transition to DOZE_AOD_PAUSING without additional intervention.
+    // This method serves as a fallback for devices where the initial proximity state is not propagated,
+    // forcing the transition only if it has not already happened.
+    // In the common case, mDelayedProximityCheckRunnable is cancelled before execution because the system
+    // reaches the desired state by itself.
     private void startDelayedProximityCheck(final Object dozeTriggersInstance, final Class<?> stateEnum) {
         try {
             final Context context = (Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext");
@@ -457,7 +465,12 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 try {
                                     XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
                                 } catch (Throwable fallbackT) {
-                                    CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass, "Set Doze Screen Brightness APIs");
+                                    // Dump the DozeService class itself, as it might override methods
+                                    CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass, "Set Doze Screen Brightness APIs (DozeService)");
+                                    // Dump its parent (DreamService), as the methods physically reside there in AOSP
+                                    if (mDozeServiceClass != null && mDozeServiceClass.getSuperclass() != null) {
+                                        CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass.getSuperclass(), "Set Doze Screen Brightness APIs (DreamService)");
+                                    }
                                 }
                             }
                         }
