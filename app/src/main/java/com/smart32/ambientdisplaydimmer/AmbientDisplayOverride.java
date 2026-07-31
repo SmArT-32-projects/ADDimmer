@@ -33,10 +33,29 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     private Handler mHandler;
     private Runnable mBrightnessRunnable;
     private volatile boolean isAodActive = false;
+    private static volatile boolean sUseLegacyBrightnessApi = false;
     private WakeLock mWakeLock;
     static WakeLock mScreenOffFixWakeLock;
     private WakeLock mProximityCheckWakeLock;
     private Runnable mDelayedProximityCheckRunnable;
+
+    // Logging Flags
+    public static boolean sLogInfo = false;
+    public static boolean sLogSensor = false;
+
+    // Logging Wrappers
+    public static void logInfo(String msg) {
+        if (sLogInfo) XposedBridge.log(TAG + "[Info] " + msg);
+    }
+    public static void logSensor(String msg) {
+        if (sLogSensor) XposedBridge.log(TAG + "[Sensor] " + msg);
+    }
+    public static void logError(String msg) {
+        XposedBridge.log(TAG + "[Error] " + msg);
+    }
+    public static void logFatal(String msg) {
+        XposedBridge.log(TAG + "[Fatal] " + msg);
+    }
 
     private File getConfigFile() {
         return new File(Environment.getExternalStorageDirectory(), ".ADDimmer_config.txt");
@@ -148,7 +167,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     });
             XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "updateBrightnessAndReady", boolean.class, XC_MethodReplacement.DO_NOTHING);
             XposedHelpers.findAndHookMethod(dozeScreenBrightnessClass, "onSensorChanged", android.hardware.SensorEvent.class, XC_MethodReplacement.DO_NOTHING);
-            XposedBridge.log(TAG + "Native AOD brightness control disabled.");
+            logInfo("Native AOD brightness control disabled.");
         } catch (Throwable t) {
             CrashAnalyzer.analyzeAndLog(t, dozeScreenBrightnessClass, "Disable native AOD brightness");
         }
@@ -162,14 +181,16 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                         Enum<?> oldState = (Enum<?>) param.args[0];
                         Enum<?> newState = (Enum<?>) param.args[1];
 
+                        logInfo("Intercepting transition: " + oldState + " -> " + newState);
+
                         if (newState.name().equals("DOZE_AOD")) {
                             if (!isAodActive) {
                                 isAodActive = true;
                         
                                 // --- Reload configuration every time we enter AOD ---
                                 loadConfig();
-                        
-                                XposedBridge.log(TAG + "AOD active. Starting checks.");
+
+                                logInfo("AOD active. Starting checks.");
 
                                 Object dozeTriggersInstance = param.thisObject;
                                 if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
@@ -179,11 +200,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
                                 // Handle the transition to DOZE_AOD based on the previous state
                                 if (oldState.name().equals("DOZE_AOD_PAUSED")) {
-                                    XposedBridge.log(TAG + "AOD resumed from PAUSED. Delaying first check by 2s");
+                                    logInfo("AOD resumed from PAUSED. Delaying first check by 2s");
                                     acquireTempWakeLock((Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext"), 2400L);
                                     mHandler.postDelayed(mBrightnessRunnable, 2000); // Phone is being taken out of a pocket, ensure the service stays awake during this time
                                 } else if (oldState.name().equals("DOZE_AOD_PAUSING")) {
-                                    XposedBridge.log(TAG + "AOD resumed from PAUSING.");
+                                    logInfo("AOD resumed from PAUSING.");
                                     mHandler.postDelayed(mBrightnessRunnable, 100); // A brief trigger of the proximity sensor
                                 } else {
                                     mHandler.post(mBrightnessRunnable); // All other cases
@@ -195,7 +216,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                         } else {
                             if (isAodActive) {
                                 isAodActive = false;
-                                XposedBridge.log(TAG + "AOD inactive. Stopping checks.");
+                                logInfo("AOD inactive. Stopping checks.");
                                 stopAodListeners();
                             }
                         }
@@ -255,12 +276,32 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             String line;
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
+
+                // Strip inline comments first (e.g., "LOG_INFO: false # set true later")
+                int commentIndex = line.indexOf('#');
+                if (commentIndex != -1) {
+                    line = line.substring(0, commentIndex).trim();
+                }
+                if (line.isEmpty()) continue;
 
                 String[] parts = line.split(":");
                 if (parts.length == 2) {
-                    float numerator = Float.parseFloat(parts[0].trim());
-                    float lux = Float.parseFloat(parts[1].trim());
+                    String key = parts[0].trim();
+                    String value = parts[1].trim().toUpperCase();
+
+                    // Parse logging flags
+                    if (key.equalsIgnoreCase("LOG_INFO")) {
+                        sLogInfo = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+                    if (key.equalsIgnoreCase("LOG_SENSOR")) {
+                        sLogSensor = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+
+                    // Parse brightness pairs (if not a flag)
+                    float numerator = Float.parseFloat(key);
+                    float lux = Float.parseFloat(value);
 
                     if (numerator < 0 || numerator > 255 || lux < 0) {
                         throw new IllegalArgumentException("Values out of bounds (0-255 expected)");
@@ -270,11 +311,11 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             }
 
             if (newConfigs.size() > 10) {
-                XposedBridge.log(TAG + "Config error: More than 10 pairs defined. Falling back to defaults.");
+                logError("Config error: More than 10 pairs defined. Falling back to defaults.");
                 mUseDefaultConfig = true;
                 mBrightnessConfigs.clear();
             } else if (newConfigs.isEmpty()) {
-                XposedBridge.log(TAG + "Config error: No valid pairs found. Falling back to defaults.");
+                logError("Config error: No valid pairs found. Falling back to defaults.");
                 mUseDefaultConfig = true;
                 mBrightnessConfigs.clear();
             } else {
@@ -285,7 +326,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 mLastConfigModifiedTime = currentModifiedTime;
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + "Config parsing error: " + e.getMessage() + ". Falling back to defaults.");
+            logError("Config parsing error: " + e.getMessage() + ". Falling back to defaults.");
             mUseDefaultConfig = true;
             mBrightnessConfigs.clear(); // Drop any previously cached data on read failure
         }
@@ -297,6 +338,13 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             if (file.createNewFile()) {
                 try (FileWriter writer = new FileWriter(file)) {
                     writer.write("# Ambient Display Dimmer Configuration\n");
+                    writer.write("# --- Logging Flags ---\n");
+                    writer.write("# LOG_INFO: Logs normal operations, mode switches and fallback activations.\n");
+                    writer.write("# LOG_SENSOR: Logs brightness and illuminance events for tuning config values.\n");
+                    writer.write("# Note: Errors and Fatal crashes are always logged by default.\n");
+                    writer.write("LOG_INFO: false\n");
+                    writer.write("LOG_SENSOR: false\n");
+                    writer.write("# --- Brightness Config ---\n");
                     writer.write("# Format: <screen_brightness_numerator>:<lux_threshold>\n");
                     writer.write("# Maximum allowed pairs: 10. Behavior is stepwise (no interpolation).\n");
                     writer.write("1:0\n");
@@ -304,7 +352,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 }
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + "Failed to create default config at " + file.getAbsolutePath() + ": " + e.getMessage());
+            logError("Failed to create default config at " + file.getAbsolutePath() + ": " + e.getMessage());
         }
     }
     
@@ -319,7 +367,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 mWakeLock.acquire(timeout);
             }
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Failed to acquire temp WakeLock: " + t);
+            logError("Failed to acquire temp WakeLock: " + t);
         }
     }
 
@@ -455,19 +503,27 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     if (event != null && event.values != null && event.values.length > 0) {
                         float lux = event.values[0];
                         float brightness = calculateBrightness(lux);
-                        XposedBridge.log(TAG + "Lux detected: " + lux + " - Brightness set to: " + brightness);
+                        logSensor("Lux detected: " + lux + " - Brightness set to: " + brightness + " (" + (int) (brightness * 255.0f) + ")");
                         if (mDozeService != null) {
-                            try {
-                                // Try new float API first (Android 16 QPR2+)
-                                XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
-                            } catch (Throwable t) {
+                            boolean brightnessSet = false;
+                            // Try the new API first (Android 16 QPR2+)
+                            if (!sUseLegacyBrightnessApi) {
+                                try {
+                                    XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightness", brightness);
+                                    brightnessSet = true;
+                                } catch (Throwable t) {
+                                    // New API failed, remember to use legacy fallback from now on
+                                    sUseLegacyBrightnessApi = true;
+                                }
+                            }
+                            if (!brightnessSet) {
                                 // Fallback to old API
                                 try {
                                     XposedHelpers.callMethod(mDozeService, "setDozeScreenBrightnessFloat", brightness);
                                 } catch (Throwable fallbackT) {
-                                    // Dump the DozeService class itself, as it might override methods
+                                    // Dump the DozeService class itself
                                     CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass, "Set Doze Screen Brightness APIs (DozeService)");
-                                    // Dump its parent (DreamService), as the methods physically reside there in AOSP
+                                    // Dump its parent (DreamService)
                                     if (mDozeServiceClass != null && mDozeServiceClass.getSuperclass() != null) {
                                         CrashAnalyzer.analyzeAndLog(fallbackT, mDozeServiceClass.getSuperclass(), "Set Doze Screen Brightness APIs (DreamService)");
                                     }
