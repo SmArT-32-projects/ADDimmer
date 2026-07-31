@@ -11,13 +11,8 @@ import android.hardware.SensorManager;
 import android.os.Handler;
 import android.os.Looper;
 
-import de.robv.android.xposed.XposedBridge;
-
-
 // Persistently monitors the proximity sensor and stores its last value in a public static variable.
 public class PersistentProximityMonitor {
-
-    private static final String TAG = "[AD Dimmer] ";
 
     public static volatile float sLastProximityValue = -1f;
     private static boolean isInitialized = false;
@@ -37,7 +32,7 @@ public class PersistentProximityMonitor {
         }
 
         if (sProximitySensor == null) {
-            XposedBridge.log(TAG + "PersistentProximityMonitor: Proximity sensor not found.");
+            AmbientDisplayOverride.logError("PersistentProximityMonitor: Proximity sensor not found.");
             return;
         }
 
@@ -53,21 +48,21 @@ public class PersistentProximityMonitor {
         // Register the persistent listener.
         sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
         isInitialized = true;
-        // XposedBridge.log(TAG + "PersistentProximityMonitor initialized.");
+        AmbientDisplayOverride.logInfo("PersistentProximityMonitor initialized.");
         BroadcastReceiver userPresentReceiver = new BroadcastReceiver() {
             private final Handler mHandler = new Handler(Looper.getMainLooper());
             private final Runnable mReRegister = () -> {
                 try {
                     sSensorManager.registerListener(sProximityListener, sProximitySensor, SensorManager.SENSOR_DELAY_NORMAL);
                 } catch (Throwable t) {
-                    XposedBridge.log(TAG + "Failed to re-register listener: " + t);
+                    AmbientDisplayOverride.logError("Failed to re-register listener: " + t);
                 }
             };
 
             // Re-register the listener to prevent its permanent hanging
             @Override
             public void onReceive(Context context, Intent intent) {
-                // XposedBridge.log(TAG + "ACTION_USER_PRESENT received. Re-registering proximity sensor listener.");
+                AmbientDisplayOverride.logInfo("ACTION_USER_PRESENT received. Re-registering proximity sensor listener.");
                 sSensorManager.unregisterListener(sProximityListener);
                 mHandler.removeCallbacks(mReRegister);
                 mHandler.postDelayed(mReRegister, 20L);
