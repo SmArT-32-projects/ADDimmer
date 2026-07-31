@@ -8,11 +8,9 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 public class CrashAnalyzer {
-    private static final String TAG = "[ADDimmer Analyzer] ";
     private static final int MAX_DUMP_CLASSES = 250; // Safeguard against logcat flooding
 
     // Caches to prevent logcat flooding
@@ -21,10 +19,10 @@ public class CrashAnalyzer {
 
     // Analyze missing methods/fields
     public static void analyzeAndLog(Throwable t, Class<?> targetClass, String contextInfo) {
-        XposedBridge.log(TAG + "Error in [" + contextInfo + "]: " + t.toString());
+        AmbientDisplayOverride.logFatal("Error in [" + contextInfo + "]: " + t.toString());
 
         if (targetClass == null) {
-            XposedBridge.log(TAG + "Target class is null. Cannot dump structure.");
+            AmbientDisplayOverride.logError("Target class is null. Cannot dump structure.");
             return;
         }
 
@@ -33,66 +31,90 @@ public class CrashAnalyzer {
 
             // Atomic check and add
             if (!sDumpedClasses.add(className)) {
-                XposedBridge.log(TAG + "Class structure for [" + className + "] already dumped. Skipping.");
+                AmbientDisplayOverride.logInfo("Class structure for [" + className + "] already dumped. Skipping.");
                 return;
             }
 
-            XposedBridge.log(TAG + "=== DUMPING CLASS STRUCTURE: " + className + " ===");
+            AmbientDisplayOverride.logFatal("=== DUMPING CLASS STRUCTURE: " + className + " ===");
             dumpFields(targetClass);
             dumpMethods(targetClass);
-            XposedBridge.log(TAG + "=== END OF DUMP ===");
+            AmbientDisplayOverride.logFatal("=== END OF DUMP ===");
         }
     }
 
     // Analyze missing classes
     public static void analyzeClassNotFound(Throwable t, ClassLoader classLoader, String expectedClassName, String contextInfo) {
-        XposedBridge.log(TAG + "ClassNotFound Error in [" + contextInfo + "]: " + t.toString());
+        AmbientDisplayOverride.logFatal("ClassNotFound Error in [" + contextInfo + "]: " + t.toString());
 
         if (classLoader == null || expectedClassName == null) {
-            XposedBridge.log(TAG + "ClassLoader or ClassName is null. Cannot proceed with analysis.");
+            AmbientDisplayOverride.logError("ClassLoader or ClassName is null. Cannot proceed with analysis.");
             return;
         }
 
         // Extract target package for scanning
         int lastDotIndex = expectedClassName.lastIndexOf('.');
         if (lastDotIndex == -1) {
-            XposedBridge.log(TAG + "Invalid class name format: " + expectedClassName);
+            AmbientDisplayOverride.logError("Invalid class name format: " + expectedClassName);
             return;
         }
         String targetPackage = expectedClassName.substring(0, lastDotIndex);
 
         // Atomic check and add
         if (!sScannedPackages.add(targetPackage)) {
-            XposedBridge.log(TAG + "Package [" + targetPackage + "] already scanned. Skipping DEX analysis.");
+            AmbientDisplayOverride.logInfo("Package [" + targetPackage + "] already scanned. Skipping DEX analysis.");
             return;
         }
 
         // Dump ClassLoader hierarchy to identify custom OEM loaders
         dumpClassLoaderHierarchy(classLoader);
 
-        XposedBridge.log(TAG + "=== SCANNING DEX FOR PACKAGE: " + targetPackage + " ===");
+        AmbientDisplayOverride.logFatal("=== SCANNING DEX FOR PACKAGE: " + targetPackage + " ===");
         try {
             // Risky operation: Attempting to access ART internal structures.
             // If it fails, it's safely caught below without breaking the module further.
             scanDexFiles(classLoader, targetPackage);
         } catch (Throwable scanError) {
-            XposedBridge.log(TAG + "Dynamic dex scanning failed (OEM restricted or changed ART internals): " + scanError.getMessage());
+            AmbientDisplayOverride.logError("Dynamic dex scanning failed (OEM restricted or changed ART internals): " + scanError.getMessage());
         }
-        XposedBridge.log(TAG + "=== END OF DEX SCAN ===");
+        AmbientDisplayOverride.logFatal("=== END OF DEX SCAN ===");
     }
 
     private static void dumpClassLoaderHierarchy(ClassLoader cl) {
-        XposedBridge.log(TAG + "--- ClassLoader Hierarchy ---");
+        AmbientDisplayOverride.logFatal("--- ClassLoader Hierarchy ---");
         ClassLoader current = cl;
         while (current != null) {
-            XposedBridge.log(TAG + "  " + current.getClass().getName());
+            AmbientDisplayOverride.logFatal("  " + current.getClass().getName());
             current = current.getParent();
         }
     }
 
-    private static void scanDexFiles(ClassLoader classLoader, String targetPackage) throws Throwable {
-        Object pathList = XposedHelpers.getObjectField(classLoader, "pathList");
-        Object[] dexElements = (Object[]) XposedHelpers.getObjectField(pathList, "dexElements");
+    private static void scanDexFiles(ClassLoader classLoader, String targetPackage) {
+        Object pathList = null;
+        ClassLoader currentClassLoader = classLoader;
+
+        // Traverse the ClassLoader hierarchy to find the one holding 'pathList' (e.g., BaseDexClassLoader)
+        while (currentClassLoader != null) {
+            try {
+                pathList = XposedHelpers.getObjectField(currentClassLoader, "pathList");
+                if (pathList != null) break;
+            } catch (Throwable ignored) {
+                // Not in this ClassLoader, move to parent
+                currentClassLoader = currentClassLoader.getParent();
+            }
+        }
+
+        if (pathList == null) {
+            AmbientDisplayOverride.logError("  Could not find 'pathList' in any ClassLoader in the hierarchy. Aborting dex scan.");
+            return;
+        }
+
+        Object[] dexElements;
+        try {
+            dexElements = (Object[]) XposedHelpers.getObjectField(pathList, "dexElements");
+        } catch (Throwable t) {
+            AmbientDisplayOverride.logError("  Found pathList, but 'dexElements' is missing or inaccessible.");
+            return;
+        }
 
         int matchCount = 0;
         boolean limitReached = false;
@@ -108,7 +130,7 @@ public class CrashAnalyzer {
                     dexName = (String) XposedHelpers.callMethod(dexFile, "getName");
                 } catch (Throwable ignored) { }
 
-                XposedBridge.log(TAG + "Scanning source: " + dexName);
+                AmbientDisplayOverride.logFatal("Scanning source: " + dexName);
 
                 @SuppressWarnings("unchecked")
                 Enumeration<String> entries = (Enumeration<String>) XposedHelpers.callMethod(dexFile, "entries");
@@ -117,12 +139,12 @@ public class CrashAnalyzer {
                     String className = entries.nextElement();
 
                     if (className.startsWith(targetPackage)) {
-                        XposedBridge.log(TAG + "  Found: " + className);
+                        AmbientDisplayOverride.logFatal("  Found: " + className);
                         matchCount++;
 
                         // Limit the output to prevent huge logs
                         if (matchCount >= MAX_DUMP_CLASSES) {
-                            XposedBridge.log(TAG + "  [WARNING] Max class limit (" + MAX_DUMP_CLASSES + ") reached. Truncating output.");
+                            AmbientDisplayOverride.logError("  Max class limit (" + MAX_DUMP_CLASSES + ") reached. Truncating output.");
                             limitReached = true;
                             break;
                         }
@@ -131,31 +153,110 @@ public class CrashAnalyzer {
             }
         }
 
+        // Pass 2: Heuristic fallback search
+        // Triggered if the exact package (e.g., com.android.systemui.doze) was heavily renamed or moved by OEM
         if (matchCount == 0) {
-            XposedBridge.log(TAG + "  (No classes found matching the package. Package might be missing or heavily renamed)");
+            AmbientDisplayOverride.logError("  Exact package not found. Attempting heuristic search up one level...");
+
+            int lastDot = targetPackage.lastIndexOf('.');
+            if (lastDot != -1) {
+                // Extract parent package (e.g., "com.android.systemui") and keyword (e.g., "doze")
+                String parentPackage = targetPackage.substring(0, lastDot);
+                String keyword = targetPackage.substring(lastDot + 1).toLowerCase();
+
+                AmbientDisplayOverride.logFatal("  --- Heuristic Search: classes in [" + parentPackage + "] containing [" + keyword + "] ---");
+
+                // Reset flag for the second pass
+                limitReached = false;
+
+                // Re-iterate through dex elements to avoid storing massive lists in RAM
+                for (Object element : dexElements) {
+                    if (limitReached) break;
+
+                    Object dexFile = XposedHelpers.getObjectField(element, "dexFile");
+                    if (dexFile != null) {
+                        @SuppressWarnings("unchecked")
+                        Enumeration<String> entries = (Enumeration<String>) XposedHelpers.callMethod(dexFile, "entries");
+
+                        while (entries.hasMoreElements()) {
+                            String className = entries.nextElement();
+
+                            // Expanded check: Starts with parent package AND contains the keyword (case-insensitive)
+                            if (className.startsWith(parentPackage) && className.toLowerCase().contains(keyword)) {
+                                AmbientDisplayOverride.logFatal("  Found heuristic match: " + className);
+                                matchCount++;
+
+                                if (matchCount >= MAX_DUMP_CLASSES) {
+                                    AmbientDisplayOverride.logError("  Max class limit reached during heuristic search.");
+                                    limitReached = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (matchCount == 0) {
+                    AmbientDisplayOverride.logError("  No classes found even with heuristic search");
+                }
+            } else {
+                AmbientDisplayOverride.logError("  Target package has no parent level. Cannot perform heuristic search");
+            }
         }
     }
 
     private static void dumpFields(Class<?> clazz) {
-        XposedBridge.log(TAG + "--- FIELDS ---");
-        Field[] fields = clazz.getDeclaredFields();
-        if (fields.length == 0) XposedBridge.log(TAG + "  (No fields found)");
-        for (Field field : fields) {
-            XposedBridge.log(TAG + "  " + Modifier.toString(field.getModifiers()) + " " + field.getType().getSimpleName() + " " + field.getName());
+        AmbientDisplayOverride.logFatal("--- FIELDS ---");
+        Class<?> current = clazz;
+
+        // Traverse up to Object.class to show inherited fields
+        while (current != null && current != Object.class) {
+            // Skip base Android/Java framework classes to reduce logcat noise
+            if (current.getName().startsWith("android.") || current.getName().startsWith("java.")) {
+                current = current.getSuperclass();
+                continue;
+            }
+
+            AmbientDisplayOverride.logFatal("  [Declared in: " + current.getSimpleName() + "]");
+            Field[] fields = current.getDeclaredFields();
+            if (fields.length == 0) {
+                AmbientDisplayOverride.logFatal("    (No fields found)");
+            } else {
+                for (Field field : fields) {
+                    AmbientDisplayOverride.logFatal("    " + Modifier.toString(field.getModifiers()) + " " + field.getType().getSimpleName() + " " + field.getName());
+                }
+            }
+            current = current.getSuperclass();
         }
     }
 
     private static void dumpMethods(Class<?> clazz) {
-        XposedBridge.log(TAG + "--- METHODS ---");
-        Method[] methods = clazz.getDeclaredMethods();
-        if (methods.length == 0) XposedBridge.log(TAG + "  (No methods found)");
-        for (Method method : methods) {
-            StringBuilder params = new StringBuilder();
-            for (Class<?> pType : method.getParameterTypes()) {
-                if (params.length() > 0) params.append(", ");
-                params.append(pType.getSimpleName());
+        AmbientDisplayOverride.logFatal("--- METHODS ---");
+        Class<?> current = clazz;
+
+        // Traverse up to Object.class to show inherited methods
+        while (current != null && current != Object.class) {
+            // Skip base Android/Java framework classes to reduce logcat noise
+            if (current.getName().startsWith("android.") || current.getName().startsWith("java.")) {
+                current = current.getSuperclass();
+                continue;
             }
-            XposedBridge.log(TAG + "  " + Modifier.toString(method.getModifiers()) + " " + method.getReturnType().getSimpleName() + " " + method.getName() + "(" + params.toString() + ")");
+
+            AmbientDisplayOverride.logFatal("  [Declared in: " + current.getSimpleName() + "]");
+            Method[] methods = current.getDeclaredMethods();
+            if (methods.length == 0) {
+                AmbientDisplayOverride.logFatal("    (No methods found)");
+            } else {
+                for (Method method : methods) {
+                    StringBuilder params = new StringBuilder();
+                    for (Class<?> pType : method.getParameterTypes()) {
+                        if (params.length() > 0) params.append(", ");
+                        params.append(pType.getSimpleName());
+                    }
+                    AmbientDisplayOverride.logFatal("    " + Modifier.toString(method.getModifiers()) + " " + method.getReturnType().getSimpleName() + " " + method.getName() + "(" + params.toString() + ")");
+                }
+            }
+            current = current.getSuperclass();
         }
     }
 }
