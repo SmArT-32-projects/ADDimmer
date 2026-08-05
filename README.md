@@ -20,13 +20,20 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
 
 ## Compatibility and Risks
 
-This module was developed and tested specifically for the following configuration:
-* **Device:** Sony Xperia 1 V
-* **ROM:** crDroid 11.6 (Android 15)
+This module was originally developed for the **Sony Xperia 1 V** and **crDroid 11.6**, but it may work on other devices with AOSP-based ROMs if the ROM developer has not significantly modified the `com.android.systemui.doze` component.
 
-**Confirmed compatibility with LineageOS-based ROMs from version 22.2 to 23.2.**
 
-Functionality on other devices and ROMs is not guaranteed. However, it may theoretically work on other AOSP-based ROMs (Android 15 and 16) if the ROM developer has not significantly modified the `com.android.systemui.doze` component implementation.
+### Device & ROM Compatibility
+
+| Device | ROM / OS Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **Sony Xperia 1 V** *(pdx234)* | crDroid 11.6 | ✅ Fully Compatible | Confirmed working |
+| | LineageOS 22.2, 23.2 | ✅ Fully Compatible | Confirmed working |
+| | LineageOS / crDroid (Other versions) | 🟡 Presumed Compatible | Needs further testing |
+| | Evolution X (Android 15 & 16) | ⚠️ Minor Bug | Screen stays dark when turned on in manual brightness mode (testing needed) |
+| **Poco F6 Pro/Redmi K70** *(vermeer)* | Lunaris AOSP 3.12 (Android 16) | ✅ Compatible | Requires manual brightness configuration |
+| **Redmi Note 5** *(whyred)* | LineageOS 22.2 | ❓ Presumed Incompatible | Insufficient data, needs further testing |
+
 
 This module is intended to solve the following common issues:
 1.  AOD brightness gets stuck at the level it was when the screen was turned off.
