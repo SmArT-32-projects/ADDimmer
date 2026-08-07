@@ -72,6 +72,7 @@ public class DozeScreenOffFixHook {
                                 Enum<?> newState = (Enum<?>) param.args[1];
 
                                 if ("DOZE_REQUEST_PULSE".equals(newState.name())) {
+                                    if (!AmbientDisplayOverride.sHookPulseOverride) return;
 
                                     Object dozeScreenStateInstance = param.thisObject;
                                     Object dozeHost = null;
@@ -130,6 +131,7 @@ public class DozeScreenOffFixHook {
                                 Object dozeScreenStateInstance = param.thisObject;
 
                                 if ("DOZE_AOD_PAUSING".equals(oldState.name()) && "DOZE_AOD_PAUSED".equals(newState.name())) {
+                                    if (!AmbientDisplayOverride.sHookAodPausedScreenOff) return;
 
                                     Object dozeHost = null;
                                     try {
@@ -200,6 +202,30 @@ public class DozeScreenOffFixHook {
                     });
         } catch (Throwable t) {
             CrashAnalyzer.analyzeAndLog(t, dozeScreenStateClass, "Hook DozeScreenState transitionTo");
+        }
+
+        // --- Experimental: Force STATE_ON during Doze ---
+        try {
+            XposedHelpers.findAndHookMethod(dozeScreenStateClass, "applyScreenState", int.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        if (AmbientDisplayOverride.sExperimentalForceStateOn) {
+                            int requestedState = (int) param.args[0];
+
+                            // Display.STATE_DOZE (3) or Display.STATE_DOZE_SUSPEND (4)
+                            if (requestedState == Display.STATE_DOZE || requestedState == Display.STATE_DOZE_SUSPEND) {
+                                param.args[0] = Display.STATE_ON; // 2
+                                AmbientDisplayOverride.logInfo("Forced Display.STATE_ON instead of " + (requestedState == Display.STATE_DOZE ? "STATE_DOZE" : "STATE_DOZE_SUSPEND"));
+                            }
+                        }
+                    } catch (Throwable t) {
+                        CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "Experimental force STATE_ON hook");
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            CrashAnalyzer.analyzeAndLog(t, dozeScreenStateClass, "Hook applyScreenState for force STATE_ON");
         }
     }
 }
