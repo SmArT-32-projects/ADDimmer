@@ -1,6 +1,7 @@
 package com.smart32.ambientdisplaydimmer;
 
 import android.content.Context;
+import android.hardware.display.DisplayManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -10,6 +11,8 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.os.Environment;
+import android.provider.Settings;
+import android.view.Display;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -38,6 +41,21 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     static WakeLock mScreenOffFixWakeLock;
     private WakeLock mProximityCheckWakeLock;
     private Runnable mDelayedProximityCheckRunnable;
+    public static volatile boolean sExperimentalWakeBrightnessFix = false;
+    public static volatile boolean sExperimentalForceStateOn = false;
+    public static volatile boolean sHookPersistentProximity = true;
+    public static volatile boolean sHookAodPausedScreenOff = true;
+    public static volatile boolean sHookPulseOverride = true;
+    public static volatile long sCheckIntervalMs = 5000L;
+
+    // Context for dynamic hook management
+    private static Context sSystemUiContext;
+
+    private void applyProximityMonitorState() {
+        if (sSystemUiContext != null) {
+            PersistentProximityMonitor.updateState(sSystemUiContext, sHookPersistentProximity);
+        }
+    }
 
     // Logging Flags
     public static boolean sLogInfo = false;
@@ -61,7 +79,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         return new File(Environment.getExternalStorageDirectory(), ".ADDimmer_config.txt");
     }
     private List<BrightnessConfig> mBrightnessConfigs = new ArrayList<>();
-    private volatile boolean mUseDefaultConfig = true;
+    private volatile boolean mUseDefaultLuxConfig = true;
     private long mLastConfigModifiedTime = 0L;
 
     // Helper class to store and sort config pairs
@@ -97,8 +115,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         try {
-                            Context context = (Context) param.thisObject;
-                            PersistentProximityMonitor.init(context);
+                            sSystemUiContext = (Context) param.thisObject;
+                            loadConfig();
                         } catch (Throwable t) {
                             CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "SystemUI onCreate init");
                         }
@@ -120,8 +138,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
                             try {
-                                Context context = (Context) param.thisObject;
-                                PersistentProximityMonitor.init(context);
+                                sSystemUiContext = (Context) param.thisObject;
+                                loadConfig();
                             } catch (Throwable t) {
                                 CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "SystemUI onCreate init");
                             }
@@ -218,6 +236,59 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                                 isAodActive = false;
                                 logInfo("AOD inactive. Stopping checks.");
                                 stopAodListeners();
+
+                                // Experimental Wake Brightness Fix
+                                if (sExperimentalWakeBrightnessFix) {
+                                    try {
+                                        Context context = (Context) XposedHelpers.getObjectField(param.thisObject, "mContext");
+                                        if (context != null) {
+                                            int mode = Settings.System.getInt(context.getContentResolver(),
+                                                    Settings.System.SCREEN_BRIGHTNESS_MODE, 0);
+
+                                            if (mode == Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL) {
+
+                                                // getFloat for screen_brightness_float returns -1.0f -> fetch int and convert
+                                                int intVal = Settings.System.getInt(context.getContentResolver(),
+                                                        Settings.System.SCREEN_BRIGHTNESS, -1);
+
+                                                float val;
+                                                float nudgeVal;
+                                                if (intVal >= 1) {
+                                                    val = (float) (intVal - 0.5) / 255.0f; // Convert and prevent drift
+                                                    logInfo("Parsed brightness: " + intVal + " (converted to " + val + ")");
+                                                    if (intVal > 1) {
+                                                        nudgeVal = val - 1.0f / 255.0f;
+                                                    } else {
+                                                        nudgeVal = val + 1.0f / 255.0f;
+                                                    }
+                                                } else {
+                                                    val = 0.0f;
+                                                    nudgeVal = 1.0f / 255.0f;
+                                                }
+
+                                                DisplayManager dm = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+                                                int displayId = Display.DEFAULT_DISPLAY;
+
+                                                try {
+                                                    XposedHelpers.callMethod(dm, "setBrightness", displayId, nudgeVal);
+                                                } catch (Throwable t) {
+                                                    CrashAnalyzer.analyzeAndLog(t, dm.getClass(), "Experimental wake brightness fix (initial nudge)");
+                                                }
+
+                                                mHandler.postDelayed(() -> {
+                                                    try {
+                                                        XposedHelpers.callMethod(dm, "setBrightness", displayId, val);
+                                                    } catch (Throwable t) {
+                                                        CrashAnalyzer.analyzeAndLog(t, dm.getClass(), "Experimental wake brightness fix (delayed sync)");
+                                                    }
+                                                }, 500);
+                                                logInfo("Force-synced brightness to: " + val);
+                                            }
+                                        }
+                                    } catch (Throwable t) {
+                                        CrashAnalyzer.analyzeAndLog(t, param.thisObject.getClass(), "Experimental wake brightness fix (main routine)");
+                                    }
+                                }
                             }
                         }
                     } catch (Throwable t) {
@@ -248,7 +319,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
             CrashAnalyzer.analyzeAndLog(t, dozeServiceClass, "Hook onDestroy");
         }
 
-        // --- Ensure screen is off when in DOZE_AOD_PAUSED ---
+        // --- Screen state hooks ---
         DozeScreenOffFixHook.hook(lpparam);
     }
 
@@ -257,16 +328,19 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         if (!configFile.exists()) {
             createDefaultConfig();
-            mUseDefaultConfig = true;
+            mUseDefaultLuxConfig = true;
             mBrightnessConfigs.clear();
             mLastConfigModifiedTime = 0L;
+            sCheckIntervalMs = 5000L;
+            applyProximityMonitorState();
             return;
         }
 
         // Check if the file has been modified since the last read
         long currentModifiedTime = configFile.lastModified();
-        if (currentModifiedTime == mLastConfigModifiedTime && !mBrightnessConfigs.isEmpty()) {
+        if (currentModifiedTime == mLastConfigModifiedTime) {
             // File hasn't changed, use cached configuration
+            applyProximityMonitorState();
             return;
         }
 
@@ -299,6 +373,47 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                         continue;
                     }
 
+                    // Parse check interval
+                    if (key.equalsIgnoreCase("CHECK_INTERVAL_SEC")) {
+                        try {
+                            int sec = Integer.parseInt(value);
+                            if (sec >= 1 && sec <= 300) {
+                                sCheckIntervalMs = sec * 1000L;
+                            } else {
+                                logError("Config error: CHECK_INTERVAL_SEC must be between 1 and 300. Falling back to default (5s).");
+                                sCheckIntervalMs = 5000L;
+                            }
+                        } catch (NumberFormatException e) {
+                            logError("Config error: Invalid integer for CHECK_INTERVAL_SEC. Falling back to default (5s).");
+                            sCheckIntervalMs = 5000L;
+                        }
+                        continue;
+                    }
+
+                    // Parse experimental flags
+                    if (key.equalsIgnoreCase("EXPERIMENTAL_WAKE_BRIGHTNESS_FIX")) {
+                        sExperimentalWakeBrightnessFix = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+                    if (key.equalsIgnoreCase("EXPERIMENTAL_FORCE_STATE_ON")) {
+                        sExperimentalForceStateOn = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+
+                    // Parse helper hooks flags
+                    if (key.equalsIgnoreCase("PERSISTENT_PROXIMITY")) {
+                        sHookPersistentProximity = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+                    if (key.equalsIgnoreCase("HOOK_AOD_PAUSED_SCREEN_OFF")) {
+                        sHookAodPausedScreenOff = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+                    if (key.equalsIgnoreCase("PULSE_OVERRIDE")) {
+                        sHookPulseOverride = value.equals("TRUE") || value.equals("1");
+                        continue;
+                    }
+
                     // Parse brightness pairs (if not a flag)
                     float numerator = Float.parseFloat(key);
                     float lux = Float.parseFloat(value);
@@ -312,24 +427,29 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
             if (newConfigs.size() > 10) {
                 logError("Config error: More than 10 pairs defined. Falling back to defaults.");
-                mUseDefaultConfig = true;
+                mUseDefaultLuxConfig = true;
                 mBrightnessConfigs.clear();
             } else if (newConfigs.isEmpty()) {
                 logError("Config error: No valid pairs found. Falling back to defaults.");
-                mUseDefaultConfig = true;
+                mUseDefaultLuxConfig = true;
                 mBrightnessConfigs.clear();
             } else {
                 Collections.sort(newConfigs);
                 mBrightnessConfigs = newConfigs;
-                mUseDefaultConfig = false;
-
-                mLastConfigModifiedTime = currentModifiedTime;
+                mUseDefaultLuxConfig = false;
             }
         } catch (Exception e) {
             logError("Config parsing error: " + e.getMessage() + ". Falling back to defaults.");
-            mUseDefaultConfig = true;
+            mUseDefaultLuxConfig = true;
             mBrightnessConfigs.clear(); // Drop any previously cached data on read failure
+            sCheckIntervalMs = 5000L;
         }
+
+        // Always update the modified time so we don't re-parse a broken file
+        mLastConfigModifiedTime = currentModifiedTime;
+
+        // Apply proximity monitor state based on the newly loaded/fallback config
+        applyProximityMonitorState();
     }
 
     private void createDefaultConfig() {
@@ -337,18 +457,42 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         try {
             if (file.createNewFile()) {
                 try (FileWriter writer = new FileWriter(file)) {
-                    writer.write("# Ambient Display Dimmer Configuration\n");
-                    writer.write("# --- Logging Flags ---\n");
+                    writer.write("# Ambient Display Dimmer Configuration\n\n");
+                    writer.write("# --- Logging Flags ---\n\n");
                     writer.write("# LOG_INFO: Logs normal operations, mode switches and fallback activations.\n");
                     writer.write("# LOG_SENSOR: Logs brightness and illuminance events for tuning config values.\n");
-                    writer.write("# Note: Errors and Fatal crashes are always logged by default.\n");
+                    writer.write("# Note: Errors and Fatal crashes are always logged by default.\n\n");
                     writer.write("LOG_INFO: false\n");
-                    writer.write("LOG_SENSOR: false\n");
-                    writer.write("# --- Brightness Config ---\n");
-                    writer.write("# Format: <screen_brightness_numerator>:<lux_threshold>\n");
+                    writer.write("LOG_SENSOR: false\n\n");
+                    writer.write("# --- Main Settings ---\n\n");
+                    writer.write("# CHECK_INTERVAL_SEC: Interval in seconds between light sensor (illuminance) readings.\n");
+                    writer.write("# Allowed range: 1 to 300 seconds. Default: 5.\n");
+                    writer.write("# Note: This value is largely nominal. Due to device deep sleep (which may or may not be active),\n");
+                    writer.write("# the actual interval may be higher than the set value. For instance, a 5-second setting\n");
+                    writer.write("# practically translates to an actual interval of 1-2 minutes.\n\n");
+                    writer.write("CHECK_INTERVAL_SEC: 5\n\n");
+                    writer.write("# Brightness Config (Format: <screen_brightness_numerator>:<lux_threshold>)\n");
                     writer.write("# Maximum allowed pairs: 10. Behavior is stepwise (no interpolation).\n");
+                    writer.write("# Note: On most setups, changing the brightness numerator is useless unless\n");
+                    writer.write("# EXPERIMENTAL_FORCE_STATE_ON is enabled. Without it, only the lux threshold is tweakable.\n");
+                    writer.write("# WARNING: Excessive brightness values may cause screen burn-in!\n\n");
                     writer.write("1:0\n");
-                    writer.write("3:160\n");
+                    writer.write("3:160\n\n");
+                    writer.write("# --- Helper Hooks ---\n\n");
+                    writer.write("# PERSISTENT_PROXIMITY: Improves the reliability of in-pocket detection to consistently turn off the screen.\n\n");
+                    writer.write("PERSISTENT_PROXIMITY: true\n\n");
+                    writer.write("# HOOK_AOD_PAUSED_SCREEN_OFF: Fixes black screen battery drain by ensuring the display panel fully\n");
+                    writer.write("# powers down when the device is in a pocket.\n\n");
+                    writer.write("HOOK_AOD_PAUSED_SCREEN_OFF: true\n\n");
+                    writer.write("# PULSE_OVERRIDE: Fixes the bug where notifications cause a black screen upon exiting Pocket Mode by forcing the screen to wake.\n\n");
+                    writer.write("PULSE_OVERRIDE: true\n\n");
+                    writer.write("# --- Experimental Features ---\n\n");
+                    writer.write("# EXPERIMENTAL_WAKE_BRIGHTNESS_FIX: Supposedly fixes low brightness when exiting Ambient Display in manual brightness mode\n");
+                    writer.write("# (needs testing, useful for EvolutionX ROMs).\n\n");
+                    writer.write("EXPERIMENTAL_WAKE_BRIGHTNESS_FIX: false\n\n");
+                    writer.write("# EXPERIMENTAL_FORCE_STATE_ON: Unlocks the full screen brightness range during AOD by forcing the display into STATE_ON instead of STATE_DOZE.\n");
+                    writer.write("# WARNING: This may cause massive battery drain due to disruption of deep sleep!\n\n");
+                    writer.write("EXPERIMENTAL_FORCE_STATE_ON: false\n");
                 }
             }
         } catch (Exception e) {
@@ -394,6 +538,8 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     // In the common case, mDelayedProximityCheckRunnable is cancelled before execution because the system
     // reaches the desired state by itself.
     private void startDelayedProximityCheck(final Object dozeTriggersInstance, final Class<?> stateEnum) {
+        if (!sHookPersistentProximity) return;
+
         try {
             final Context context = (Context) XposedHelpers.getObjectField(dozeTriggersInstance, "mContext");
             if (context == null) return;
@@ -456,10 +602,6 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
         private final Object mDozeService;
         private final Class<?> mDozeServiceClass;
         private boolean mInitFailed = false;
-
-        // The check interval is not guaranteed on battery;
-        // the next check will occur during the next system maintenance window (1...2 minutes)
-        private static final long CHECK_INTERVAL_MS = 5000;
         private static final long SENSOR_TIMEOUT_MS = 400;
 
         BrightnessRunnable(Object dozeTriggersInstance, Class<?> dozeServiceClass) {
@@ -551,7 +693,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         private void scheduleNext() {
             if (isAodActive) {
-                mHandler.postDelayed(this, CHECK_INTERVAL_MS);
+                mHandler.postDelayed(this, sCheckIntervalMs);
             }
         }
 
@@ -562,7 +704,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
 
         private float calculateBrightness(float lux) {
             // Fallback to default logic if config failed or is absent
-            if (mUseDefaultConfig || mBrightnessConfigs == null || mBrightnessConfigs.isEmpty()) {
+            if (mUseDefaultLuxConfig || mBrightnessConfigs == null || mBrightnessConfigs.isEmpty()) {
                 if (lux >= 160f) return 3.0f / 255f;
                 return 1.0f / 255.0f;
             }
