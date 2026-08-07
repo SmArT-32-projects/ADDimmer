@@ -2,7 +2,10 @@
 
 An Xposed module that provides adaptive brightness for the Ambient Display (AOD) and improves the reliability of in-pocket detection.
 
-## Features
+> **⚠️ Looking for the Configuration File or EvolutionX fixes?**
+> Check out the [Releases page](https://github.com/SmArT-32-projects/ADDimmer/releases) and look for version marked as **Pre-release** (v1.3) to get the latest experimental features.
+
+## Main features
 
 * **Adaptive Brightness:**
     Adjusts the AOD brightness between two levels (dim/bright) based on the ambient light sensor. To preserve battery life and avoid breaking `systemui` deep sleep, brightness updates on battery are synchronized with system maintenance windows (typically every 1-2 minutes).
@@ -17,6 +20,11 @@ An Xposed module that provides adaptive brightness for the Ambient Display (AOD)
 
 * **Fix for Black Screen bug upon receiving notifications:**
     Notifications no longer cause the screen to stay black upon receiving notifications after exiting the Pocket Mode.
+
+## 🚀 Experimental features (v1.3)
+
+* **Configuration File:** A hidden `.ADDimmer_config.txt` file in your internal storage allows you to customize brightness thresholds, adjust sensor polling intervals, and toggle specific helper hooks.
+* **Experimental hooks:** Experimental low brightness wake fix for EvolutionX and optional forcing display `STATE_ON` during AOD.
 
 ## Compatibility and Risks
 
@@ -34,6 +42,7 @@ This module was originally developed for the **Sony Xperia 1 V** and **crDroid 1
 | **Poco F6 Pro/Redmi K70** *(vermeer)* | Lunaris AOSP 3.12 (Android 16) | ✅ Compatible | Requires manual brightness configuration |
 | **Redmi Note 5** *(whyred)* | LineageOS 22.2 | ❓ Presumed Incompatible | Insufficient data, needs further testing |
 
+> **Troubleshooting Note:** If you encounter bugs on the stable release, please check if they persist on the latest **experimental pre-release**. If the bug is already fixed in the experimental build, letting me know in a report or feedback is still greatly appreciated!
 
 This module is intended to solve the following common issues:
 1.  AOD brightness gets stuck at the level it was when the screen was turned off.
@@ -48,6 +57,8 @@ This module is intended to solve the following common issues:
 If you can confirm that this module works on another device or ROM, or if you encounter a bug, please open an issue on GitHub! Your feedback is highly appreciated.
 * **[Report a Bug](https://github.com/SmArT-32-projects/ADDimmer/issues/new?template=bug_report.md)**
 * **[Report Device Compatibility](https://github.com/SmArT-32-projects/ADDimmer/issues/new?template=compatibility_report.md)**
+
+> **Important:** When submitting a bug report, it is highly recommended to reproduce the issue on the latest **experimental pre-release** build with the `LOG_INFO` option enabled in the config.
 
 ## Installation
 1.  Ensure you have Magisk (or KernelSU) and LSPosed Framework installed.
