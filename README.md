@@ -1,4 +1,4 @@
-# Ambient Display Dimmer for Xperia 1 V
+# Ambient Display Dimmer
 
 An Xposed module that provides adaptive brightness for the Ambient Display (AOD) and improves the reliability of in-pocket detection.
 
