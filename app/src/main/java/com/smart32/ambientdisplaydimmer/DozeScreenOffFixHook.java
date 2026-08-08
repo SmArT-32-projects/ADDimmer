@@ -167,7 +167,7 @@ public class DozeScreenOffFixHook {
                                             mScreenOffFixWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ADDimmer:ScreenOffFix");
                                             mScreenOffFixWakeLock.setReferenceCounted(false);
                                         } else {
-                                            AmbientDisplayOverride.logError("Error: PowerManager is null, cannot acquire WakeLock.");
+                                            AmbientDisplayOverride.logError("PowerManager is null, cannot acquire WakeLock.");
                                             param.setResult(null);
                                             return;
                                         }
@@ -180,12 +180,10 @@ public class DozeScreenOffFixHook {
                                     // Send the task to the end of the queue
                                     new Handler(Looper.getMainLooper()).post(() -> {
                                         try {
-                                            // Turn off the screen
                                             XposedHelpers.callMethod(dozeScreenStateInstance, "applyScreenState", Display.STATE_OFF);
                                         } catch (Throwable t) {
                                             CrashAnalyzer.analyzeAndLog(t, dozeScreenStateInstance.getClass(), "Call applyScreenState");
                                         } finally {
-                                            // Release the wakelock
                                             if (mScreenOffFixWakeLock != null && mScreenOffFixWakeLock.isHeld()) {
                                                 try {
                                                     mScreenOffFixWakeLock.release();
