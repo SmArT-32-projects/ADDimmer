@@ -103,7 +103,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
     public void handleLoadPackage(final LoadPackageParam lpparam) {
         if (!lpparam.packageName.equals(TARGET_PACKAGE)) return;
 
-        // Start the persistent proximity monitor
+        // --- Get context for persistent proximity monitor and initial load of config ---
         boolean hookedSystemUIApplication = false;
 
         try {
@@ -687,6 +687,7 @@ public class AmbientDisplayOverride implements IXposedHookLoadPackage {
                 mSensorManager.registerListener(listener, mLightSensor, SensorManager.SENSOR_DELAY_NORMAL, mHandler);
                 mHandler.postDelayed(timeoutRunnable[0], SENSOR_TIMEOUT_MS);
             } catch (Throwable t) {
+                logError("Failed to register light sensor listener: " + t);
                 scheduleNext();
             }
         }
